@@ -1,0 +1,93 @@
+# ==========================================================
+# Windows PE Inspector - Git 忽略规则
+# 规则：只提交"源代码 + 依赖清单 + 文档"，其余本地产物一律不上传
+# ==========================================================
+
+# ---------- 1. 虚拟环境（最关键，绝不能上传） ----------
+.venv/
+venv/
+env/
+ENV/
+virtualenv/
+pyvenv.cfg
+
+# ---------- 2. Python 运行时缓存 ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ---------- 3. 打包 / 安装产物 ----------
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+.installed.cfg
+*.manifest
+
+# ---------- 4. PyInstaller / Nuitka / UPX 打包中间件 ----------
+*.spec
+main.build/
+main.dist/
+main.onefile-build/
+*.build/
+*.dist/
+*.onefile-build/
+*.pyd
+
+# ---------- 5. IDE 与编辑器配置 ----------
+.idea/
+.vscode/
+*.iml
+*.iws
+.idea_modules/
+*.swp
+*.swo
+*~
+
+# ---------- 6. 测试与类型检查缓存 ----------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# ---------- 7. 日志与临时文件 ----------
+*.log
+logs/
+*.tmp
+*.bak
+*.cache
+
+# ---------- 8. 敏感信息（切勿上传密钥） ----------
+.env
+.env.*
+*.pem
+*.key
+secrets.json
+
+# ---------- 9. 操作系统生成的文件 ----------
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# ---------- 10. 本地工具与个人数据 ----------
+.workbuddy/
+
+# ---------- 可选：不想上传测试用的样本 exe，取消下面这行注释 ----------
+# *.exe
+
+# 说明：打包好的成品想随仓库发布时，可强制加入
+#   git add -f dist/PEInspector.exe

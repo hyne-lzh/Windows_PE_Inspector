@@ -1,0 +1,5 @@
+# Windows PE Inspector 依赖清单
+# 安装：pip install -r requirements.txt
+# 本项目零额外依赖，标准库 tkinter 用于界面，pefile 用于解析 PE 文件
+
+pefile==2024.8.26
