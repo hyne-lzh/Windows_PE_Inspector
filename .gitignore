@@ -32,15 +32,18 @@ pip-wheel-metadata/
 .installed.cfg
 *.manifest
 
-# ---------- 4. PyInstaller / Nuitka / UPX 打包中间件 ----------
+# ---------- 4. Nuitka / PyInstaller / UPX 打包中间件 ----------
+# PyInstaller
 *.spec
-main.build/
-main.dist/
-main.onefile-build/
+# Nuitka 编译产物（.build 中间目录、.dist 独立目录、.onefile-build、编译报告）
 *.build/
 *.dist/
 *.onefile-build/
+compilation-report.xml
+# 原生扩展与 UPX 备份文件
 *.pyd
+*.upx
+*.upx.bak
 
 # ---------- 5. IDE 与编辑器配置 ----------
 .idea/

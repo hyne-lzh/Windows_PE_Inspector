@@ -1,5 +1,15 @@
 # Windows PE Inspector 依赖清单
 # 安装：pip install -r requirements.txt
-# 本项目零额外依赖，标准库 tkinter 用于界面，pefile 用于解析 PE 文件
+# 界面使用 customtkinter（基于 tkinter 的现代化封装），PE 解析使用 pefile
 
+# ---------- 运行期依赖 ----------
 pefile==2024.8.26
+customtkinter==6.0.0
+
+# customtkinter 的间接依赖（pip 会自动安装，此处显式列出以便追溯）
+# darkdetect==0.8.0
+# packaging==26.3
+
+# ---------- 编译工具（仅打包 exe 时需要，日常开发无需安装）----------
+# 安装方式：pip install nuitka
+# 编译说明见 md/nuitka_install.md
