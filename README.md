@@ -80,6 +80,7 @@
 ```
 Windows_PE_Inspector/
 ├── main.py                 # 程序入口（CLI / GUI 双入口）
+├── builds.py               # 全自动编译脚本（环境预检 + 网络诊断 + 测速选后端）
 ├── core/                   # 解析核心
 │   ├── pe_parser.py        # PE 结构解析
 │   ├── dependency.py       # 依赖分析与缺失检测
@@ -96,7 +97,7 @@ Windows_PE_Inspector/
 └── README.md
 ```
 
-> 注：`core/`、`ui/`、`samples/` 为规划目录，将随开发逐步建立；`md/` 已存在。
+> 注：`builds.py` 为已提交的编译脚本；`core/`、`ui/`、`samples/` 为规划目录，将随开发逐步建立；`md/` 已存在。
 
 ## 快速开始
 
@@ -122,13 +123,42 @@ pip install -r requirements.txt
 
 本项目使用 **Nuitka** 编译（模式固定为 `--standalone`，输出文件夹，便于查错与分发）。
 
-**环境要求**：Python **3.12.x**（不要用 3.13+，MinGW64 后端不支持）、约 1GB 磁盘空间（首次编译需下载约 200MB 的 C 编译器）。
+**环境要求**：Python **3.12.x**（不要用 3.13+，MinGW64 后端不支持）、约 1GB 磁盘空间（首次编译需下载 C 编译器）。
+
+### 方式一：一键脚本（推荐，全自动）
 
 ```bash
 # 1. 安装编译工具（在已激活的虚拟环境中）
 pip install nuitka
 
-# 2. 执行编译（CMD 写法，^ 为续行符）
+# 2. 编译（无需任何参数，脚本自己判断用哪个后端）
+python builds.py
+```
+
+`python builds.py` 会依次执行 **5 步全自动流程**：
+
+| 步骤 | 内容 |
+|------|------|
+| 1/5 环境检查 | 校验 Python 版本（拦住 3.13+）、确认 Nuitka 与 `main.py` |
+| 2/5 编译器缓存 | 检查 MinGW64 / Zig 是否已在本地（已缓存则零下载） |
+| 3/5 网络与加速器诊断 | 读 hosts、代理环境变量、系统代理，并解析 `github.com` 的真实 IP |
+| 4/5 **自动选择后端** | 已缓存 → 用缓存那个；否则**先测速**再决定（GitHub 达标用 MinGW64，否则改用 Zig） |
+| 5/5 编译 | 调用 Nuitka，最后由脚本报告耗时、产物路径与目录体积 |
+
+其他可用命令：
+
+| 命令 | 用途 |
+|------|------|
+| `python builds.py --check-env` | 检查 Python 版本、Nuitka、编译器缓存与网络/代理状态 |
+| `python builds.py --test-net` | 只做网络诊断 + 实测下载速度（**不用 ping**，见下） |
+| `python builds.py --backend zig` | 强制指定后端（`auto` / `mingw64` / `zig`） |
+| `python builds.py --min-speed 1.5` | 改自动切换阈值（MB/s，默认 1.0） |
+| `python builds.py --dry-run` | 只打印编译命令，不真正编译 |
+| `python builds.py --clean` | 清理编译产物 |
+
+### 方式二：手动编译
+
+```bash
 python -m nuitka ^
   --mingw64 ^
   --assume-yes-for-downloads ^
@@ -146,8 +176,25 @@ python -m nuitka ^
 ```
 
 > PowerShell 的续行符是反引号 `` ` ``，git bash 是 `\`；也可写成**一行**，完全等价。
+> 换 Zig 后端只需把 `--mingw64` 改成 `--zig`。
+
+### 下载慢 / 编译卡住？
+
+首次编译需下载 **255 MB** 的 MinGW64。**上面的一键脚本会自动处理这一切**：先诊断链路、再测速、不达标直接切到 Zig。如果你想手动排查，按下面的顺序：
+
+1. **先看诊断与测速**——不要用 `ping`，它与下载速度基本无关（ICMP 与 HTTP 走不同节点，且 GitHub 常年丢弃 ICMP）。直接实测：
+   ```bash
+   python builds.py --test-net
+   ```
+   它会先告诉你 hosts 里有没有 GitHub 域名被指向 `127.0.0.1`（**加速器接管**的特征）、有没有走代理，再实测吞吐。
+   > ⚠️ 若使用了 Steam++ / Watt Toolkit 一类加速器：**只有加速器在运行时 GitHub 才连通**，而且编译全程不要中途开关它，否则下载会断在半路。
+2. **路线一 · 挂 hosts**（国内外通用，测速达标就跳过）：下载 [GitHub520 hosts](https://raw.hellogithub.com/hosts) 写入系统 hosts → `ipconfig /flushdns` → 重新测速。
+   > ⚠️ hosts 里若已有 Steam++ 等加速器段落（把 GitHub 指向 `127.0.0.1`），**必须先注释掉**：Windows 解析 hosts 取**第一条匹配**，追加在后面不会生效。
+3. **路线二 · 换 Zig 后端**：`python builds.py --backend zig`。编译器只有 **94 MB**（对应 MinGW64 的 255 MB），且**经 PyPI 获取，完全不碰 GitHub**。
 
 **产物**：`main.dist/` 文件夹，内含 `PEInspector.exe` 与全部依赖。把整个文件夹拷给别人即可运行。
+
+> 终端用户**不需要编译**——公开发布时把 `main.dist/` 压成 zip 作为 Release 附件，用户下载解压即用。
 
 **几个必须知道的点**（详细说明见 [`md/nuitka_install.md`](md/nuitka_install.md)）：
 
@@ -158,6 +205,7 @@ python -m nuitka ^
 | `--assume-yes-for-downloads` | 基本必需：Nuitka 会忽略本机已有的非官方编译器，坚持下载自己的 |
 | `--python-flag=no_site` | 要求代码统一用 `sys.exit()`，**不能写 `exit()`** |
 | 不使用 `--onefile` | 本项目固定 standalone 模式（启动快、报错可见、便于排查） |
+| 编译器缓存可复用 | Nuitka 检测到缓存里的编译器安装包即跳过下载，可离线分发（见指南「兜底」一节） |
 
 ## 开发路线图
 
@@ -171,6 +219,17 @@ python -m nuitka ^
 | 阶段六 | 报告与发布 | 报告导出、Nuitka 编译为 exe | 规划中 |
 
 ## 更新日志
+
+### 2026-09-16
+
+- 新增 **`builds.py`** 一键编译脚本：环境预检（拦住 Python 3.13+）、参数固化、耗时报告
+- `builds.py` 升级为**全自动**：编译器缓存检查 → 网络与加速器诊断 → 实测测速 → 自动择优后端 → 编译
+- `builds.py` 新增**加速器识别**：读 hosts / 代理环境变量 / 系统代理与 `github.com` 解析 IP，避免被加速器干扰测速判断
+- `builds.py` 新增**代理绕行复测**：挂了代理却测速失败时自动直连再测一次，区分"网络不行"与"代理有问题"
+- 编译指南新增「**两种编译方式**」：脚本编译 / 手动编译
+- 编译指南新增「**网络受限：两条路线**」：先实测下载速度（不用 ping）→ 挂 GitHub520 hosts → 仍不达标换 `--zig` 后端
+- 补充「**兜底：完全离线**」方案：手动预置编译器包到 Nuitka 缓存目录，可零下载编译
+- 实测数据入档：MinGW64 安装包 255 MB、`ziglang` wheel 94.1 MB、GitHub 直连测速 0.57 MB/s
 
 ### 2026-09-15
 
