@@ -3,11 +3,12 @@
 纯静态解析 PE 文件（exe / dll / sys），打印结构信息；绝不加载/运行样本。
 
 用法：
-    python cmd_main.py <PE 文件>              # 基本信息 + 节区表 + 导入表 + 导出表
+    python cmd_main.py <PE 文件>              # 基本信息 + 节区 + 导入 + 导出 + 高危 API
     python cmd_main.py <PE 文件> --header     # 只看文件头
     python cmd_main.py <PE 文件> --sections   # 只看节区表（含熵值/加壳提示）
     python cmd_main.py <PE 文件> --imports    # 只看导入表
     python cmd_main.py <PE 文件> --exports    # 只看导出表
+    python cmd_main.py <PE 文件> --risks      # 只看高危 API
 
 退出码：0 成功 / 1 文件或依赖问题 / 2 不是有效的 PE 文件
 """
@@ -47,15 +48,15 @@ def show_header(r) -> None:
 
 def show_sections(r) -> None:
     rule("节区表")
-    print(f"{'名称':<10}{'虚拟大小':>12}{'原始大小':>12}{'熵值':>8}  权限")
-    print("-" * 62)
+    print(f"{'名称':<10}{'虚拟大小':>12}{'原始大小':>12}{'熵值':>8}  {'权限':<12}  含义")
+    print("-" * 96)
     for s in r.sections:
         flag = "  <== 疑似加壳/加密" if s.is_suspicious else ""
         print(
             f"{s.name:<10}{human_size(s.virtual_size):>12}"
-            f"{human_size(s.raw_size):>12}{s.entropy:>8.2f}  {s.perms}{flag}"
+            f"{human_size(s.raw_size):>12}{s.entropy:>8.2f}  {s.perms:<12}  {s.perms_zh}{flag}"
         )
-    print("-" * 62)
+    print("-" * 96)
     print(f"熵值阈值 {ENTROPY_WARN}（越接近 8.0 越可能是压缩/加密数据）")
     if r.suspicious_sections:
         print("[!] 存在高熵节区：该文件很可能被加壳或加密。")
@@ -91,6 +92,26 @@ def show_exports(r) -> None:
     print(f"合计：{len(r.exports)} 个导出符号")
 
 
+def show_risks(r) -> None:
+    rule("高危 API（基于导入表静态匹配）")
+    if not r.has_risky_imports:
+        print("[ok] 未匹配到高危 API")
+        return
+    print(f"{'等级':<6}{'分类':<10}{'DLL':<18}{'函数':<26}说明")
+    print("-" * 96)
+    for x in r.risky_imports:
+        print(f"{x.risk_level:<6}{x.category:<10}{x.dll:<18}{x.function:<26}{x.description}")
+    # 按等级汇总
+    by_level = {"严重": 0, "中等": 0, "低": 0}
+    for x in r.risky_imports:
+        by_level[x.risk_level] = by_level.get(x.risk_level, 0) + 1
+    print("-" * 96)
+    print(
+        f"合计 {len(r.risky_imports)} 个　严重 {by_level['严重']}　"
+        f"中等 {by_level['中等']}　低 {by_level['低']}"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Windows PE Inspector（命令行版）：纯静态解析 PE 文件，不运行样本",
@@ -100,6 +121,7 @@ def main() -> int:
     parser.add_argument("--sections", action="store_true", help="显示节区表（含熵值与加壳提示）")
     parser.add_argument("--imports", action="store_true", help="显示导入表")
     parser.add_argument("--exports", action="store_true", help="显示导出表")
+    parser.add_argument("--risks", action="store_true", help="显示高危 API 列表")
     parser.add_argument("--all", action="store_true", help="显示全部信息（默认行为）")
     args = parser.parse_args()
 
@@ -109,7 +131,9 @@ def main() -> int:
         print(f"[x] {exc}")
         return exc.exit_code
 
-    show_all = args.all or not (args.header or args.sections or args.imports or args.exports)
+    show_all = args.all or not (
+        args.header or args.sections or args.imports or args.exports or args.risks
+    )
 
     if show_all or args.header:
         show_header(report)
@@ -119,6 +143,8 @@ def main() -> int:
         show_imports(report)
     if show_all or args.exports:
         show_exports(report)
+    if show_all or args.risks:
+        show_risks(report)
 
     print()
     print("解析完成（纯静态分析，样本从未被执行）。")

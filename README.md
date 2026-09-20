@@ -9,20 +9,26 @@
 
 ## 项目状态
 
-**状态：开发中（In Progress）**
-
-当前项目处于早期开发阶段：**工程环境已搭建完成，核心功能正在开发，暂无可运行的发布版本。**
+**状态：图形界面可用（V0.3.0），持续打磨中**
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
 | 工程环境 | 已完成 | `.venv`（Python 3.12.8）、`requirements.txt`、`.gitignore` |
-| 编译链路 | 已完成 | Nuitka 4.2.1 环境已就绪，编译参数已核实 |
-| 解析原型 | 开发中 | 基于 `pefile` 解析 PE 结构，打印导入表 |
-| 图形界面 | 规划中 | `customtkinter` 界面框架与窗口分区 |
-| 信息面板 | 规划中 | 头信息、节区表、导入/导出表可视化 |
-| 特色功能 | 规划中 | 加壳检测、依赖检测、打包器识别 |
+| 编译链路 | 已完成 | Nuitka 4.2.1 全自动编译脚本（`builds.py`） |
+| 解析核心 | 已完成 | `achieve/pe_parser.py`：基本/节区/导入/导出/高危 API 统一解析 |
+| 图形界面 | 已完成 | customtkinter 五页（基本信息/节区/导入/导出/高危 API） |
+| 信息面板 | 已完成 | 节区表含中文权限含义列、导入/导出层级树、高危 API 表格 |
+| 高危 API 检测 | 已完成 | 111 条词典覆盖进程注入/网络/加密/键盘记录等 12 类 |
+| 加壳检测 | 已完成 | 节区熵值超 7.2 自动标红 + 终端提示 |
+| 打包发布 | 规划中 | Nuitka 编译为免安装 exe（脚本就绪，待发布 Release） |
+| 字符串提取 | 规划中 | URL/IP/注册表/路径扫描 |
+| DLL 依赖检测 | 规划中 | 检查系统是否存在、位数是否匹配、递归展开依赖树 |
+| 打包器识别 | 规划中 | PyInstaller / Nuitka / UPX / VMProtect |
+| 数字签名校验 | 规划中 | 判断是否为官方原版 |
+| 资源提取 | 规划中 | 图标导出 PNG、版本信息与公司名读取 |
+| 批量扫描 | 规划中 | 整个目录一次分析，风险分级汇总 |
 | 报告导出 | 规划中 | Excel / HTML 分析报告 |
-| 打包发布 | 规划中 | Nuitka 编译为免安装 exe |
+| 界面增强 | 规划中 | 文件拖拽、右键菜单、复制与搜索 |
 
 > 进度会在本文件持续更新，每个阶段完成后同步状态。
 
@@ -30,9 +36,9 @@
 
 1. **这个程序依赖了什么？** —— 想知道一个 exe 需要哪些 DLL、哪些运行库。
 2. **为什么在别人电脑上打不开？** —— 排查缺失的运行库、32/64 位冲突等问题。
-3. **这个文件是不是被加壳了？** —— 通过节区熵值判断是否被压缩或加密。
+3. **这个文件是不是被加壳了？** —— 通过节区熵值判断是否被压缩或加密（含 VMP、UPX、PyInstaller 特征）。
 4. **它是用什么打包的？** —— 识别 PyInstaller、Nuitka、UPX 等常见打包器。
-5. **这个文件可疑吗？** —— 静态匹配高危 API、可疑字符串，不运行样本即可初筛。
+5. **这个文件可疑吗？** —— **基于 111 条高危 API 词表静态匹配**，含进程注入/反调试/键盘记录/网络下载等 12 类，**不运行样本**即可初筛。
 
 ## 功能规划
 
@@ -41,27 +47,26 @@
 - [x] 创建项目虚拟环境与依赖清单
 - [x] 配置 Git 忽略规则（虚拟环境、打包产物、IDE 配置等）
 - [x] 确定技术选型与 Nuitka 编译参数
-
-### 开发中
-
-- [ ] PE 文件解析核心（导入表解析已完成原型，正在整理为模块）
+- [x] PE 文件解析核心（`achieve/pe_parser.py`，CLI 与 GUI 共用）
+- [x] 基础信息面板：架构位数、编译时间戳、入口点、校验和
+- [x] 节区表格：名称/大小/权限/中文含义/熵值/标记
+- [x] 加壳检测：熵值超阈值时红色高亮 + 终端提示
+- [x] 导入 / 导出表：DLL 与函数层级树形展示
+- [x] 高危 API 标记：111 条内置敏感 API 词表匹配，按严重/中等/低分级着色
 
 ### 规划中
 
-- [ ] 基础信息面板：架构位数、编译时间戳、入口点、校验和
-- [ ] 节区表格：名称、大小、权限、熵值（异常节区高亮）
-- [ ] 加壳检测：熵值超阈值时提示"疑似加壳"
-- [ ] 导入 / 导出表：DLL 与函数层级树形展示
-- [ ] 资源提取：图标导出 PNG、版本信息与公司名读取
-- [ ] 高危 API 标记：内置敏感 API 词表匹配
 - [ ] 字符串提取：URL、IP、注册表路径、文件路径
 - [ ] DLL 依赖检测：检查系统是否存在、位数是否匹配、递归展开依赖树
 - [ ] 打包器识别：PyInstaller / Nuitka / UPX / VMProtect（本项目自身也用 Nuitka 编译）
 - [ ] 数字签名校验：判断是否为官方原版
+- [ ] 资源提取：图标导出 PNG、版本信息与公司名读取
 - [ ] 批量扫描：整个目录一次分析，风险分级汇总
-- [ ] 报告导出：Excel / HTML 格式分析报告
+- [ ] 报告导出：Excel / HTML 分析报告
 - [ ] 界面增强：文件拖拽、右键菜单、复制与搜索
-- [ ] 打包发布：Nuitka 编译为无控制台窗口的 exe
+- [ ] 性能优化：超大节区（>50 MB）改用采样熵
+- [ ] 配置化：高危 API 词典外置为 JSON，允许用户编辑
+- [ ] GitHub Release 发布 Nuitka 编译后的 exe
 
 ## 技术栈
 
@@ -79,45 +84,49 @@
 
 ```
 Windows_PE_Inspector/
-├── main.py                 # 程序入口（CLI / GUI 双入口）
-├── builds.py               # 全自动编译脚本（环境预检 + 网络诊断 + 测速选后端）
-├── core/                   # 解析核心
-│   ├── pe_parser.py        # PE 结构解析
-│   ├── dependency.py       # 依赖分析与缺失检测
-│   ├── packer.py           # 加壳 / 打包器识别
-│   └── report.py           # 报告导出
-├── ui/                     # customtkinter 界面
-│   ├── main_window.py      # 主窗口与布局
-│   └── widgets.py          # 自定义控件
-├── samples/                # 测试样本
-├── md/                     # 说明文档
-│   └── nuitka_install.md   # Nuitka 编译指南
-├── requirements.txt        # 依赖清单
+├── main.py                # GUI 入口（无命令行，双击即开界面）
+├── cmd_main.py            # CLI 入口（python cmd_main.py <PE 文件> [选项]）
+├── builds.py              # 全自动编译脚本（环境预检 + 网络诊断 + 测速选后端）
+├── achieve/               # GUI 与 CLI 共用的实现逻辑
+│   ├── __init__.py
+│   └── pe_parser.py       # 解析核心 + 数据类 + 高危 API 词典
+├── ui/                    # GUI 专用
+│   ├── __init__.py
+│   └── gui.py             # customtkinter 主窗口（五页 + 后台线程 + 状态栏）
+├── cli/                   # CLI 专用
+│   ├── __init__.py
+│   └── cli.py             # 命令行打印 + argparse
+├── md/
+│   └── nuitka_install.md  # Nuitka 编译指南
+├── requirements.txt       # 依赖清单（pefile + customtkinter，精确锁版本）
 ├── .gitignore
 └── README.md
 ```
 
-> 注：`builds.py` 为已提交的编译脚本；`core/`、`ui/`、`samples/` 为规划目录，将随开发逐步建立；`md/` 已存在。
+> 设计原则：解析逻辑**一份真相源**，`parse_pe()` 同时被 GUI 和 CLI 调用；GUI/CLI 专用代码物理隔离。
 
 ## 快速开始
-
-当前版本尚不可直接运行完整功能，但可以先把开发环境跑起来：
 
 ```bash
 # 1. 克隆仓库
 git clone https://github.com/hyne-lzh/Windows_PE_Inspector.git
 cd Windows_PE_Inspector
 
-# 2. 创建虚拟环境
+# 2. 创建并激活虚拟环境
 python -m venv .venv
-
-# 3. 激活虚拟环境
 .venv\Scripts\activate.bat          # CMD
 .\.venv\Scripts\Activate.ps1        # PowerShell
 
-# 4. 安装依赖
+# 3. 安装依赖
 pip install -r requirements.txt
+
+# 4. 运行（任选其一）
+python main.py                        # 图形界面（双击 exe 等价）
+python cmd_main.py <PE 文件路径>      # 命令行（例：python cmd_main.py notepad.exe --all）
+python cmd_main.py notepad.exe --risks  # 仅查看高危 API
 ```
+
+> 双击 `main.py` 或编译后的 `PEInspector.exe` 直接打开 GUI；命令行版本与 GUI 共用同一份解析逻辑。
 
 ## 编译为 exe
 

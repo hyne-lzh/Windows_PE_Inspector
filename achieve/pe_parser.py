@@ -25,6 +25,16 @@ SECTION_FLAGS = (
     (0x80000000, "W"),
 )
 
+# 节区权限缩写 → 中文含义
+PERMISSION_TRANSLATIONS = {
+    "CODE": "代码",
+    "IDATA": "已初始化数据",
+    "UDATA": "未初始化数据",
+    "X": "可执行",
+    "R": "可读",
+    "W": "可写",
+}
+
 
 class PeParseError(Exception):
     """解析失败。message 是面向用户的中文文案；exit_code 供命令行返回。"""
@@ -65,8 +75,19 @@ class SectionInfo:
     raw_size: int
     entropy: float
     characteristics: int
-    perms: str                  # 如 "CODEXR"
+    perms: str                  # 缩写如 "CODEXR"
+    perms_zh: str               # 中文含义如 "代码·可执行·可读"
     is_suspicious: bool         # entropy > ENTROPY_WARN
+
+
+@dataclass
+class RiskyImport:
+    """高危 API 导入：分类、风险等级、简要说明。"""
+    dll: str
+    function: str
+    category: str               # 如 "进程注入" / "网络"
+    risk_level: str             # "严重" / "中等" / "低"
+    description: str            # 中文说明
 
 
 @dataclass
@@ -91,8 +112,10 @@ class PeReport:
     sections: list[SectionInfo] = field(default_factory=list)
     imports: list[ImportDLL] = field(default_factory=list)
     exports: list[ExportSymbol] = field(default_factory=list)
+    risky_imports: list[RiskyImport] = field(default_factory=list)
     has_imports: bool = False
     has_exports: bool = False
+    has_risky_imports: bool = False
     suspicious_sections: bool = False
     warnings: list[str] = field(default_factory=list)
 
@@ -134,6 +157,194 @@ def fmt_time(stamp: int) -> str:
 
 def section_perms(ch: int) -> str:
     return "".join(name for bit, name in SECTION_FLAGS if ch & bit) or "-"
+
+
+def perms_to_zh(perms: str) -> str:
+    """把权限缩写翻译为中文含义，例如 "CODEXR" → "代码·可执行·可读"。
+
+    按最长优先匹配多字符代码（UDATA 5 字符 > IDATA 5 字符 > CODE 4 字符 > X/R/W 1 字符）。
+    """
+    if not perms or perms == "-":
+        return "-"
+    # 按字符长度从长到短排序（UDATA/IDATA 5 > CODE 4 > X/R/W 1），保证贪婪匹配
+    codes_by_len = sorted(PERMISSION_TRANSLATIONS.keys(), key=len, reverse=True)
+    parts: list[str] = []
+    remaining = perms
+    while remaining:
+        matched = False
+        for code in codes_by_len:
+            if remaining.startswith(code):
+                parts.append(PERMISSION_TRANSLATIONS[code])
+                remaining = remaining[len(code):]
+                matched = True
+                break
+        if not matched:
+            # 理论上不会发生（section_perms 只产出已知代码），但兜底保留单字符
+            parts.append(remaining[0])
+            remaining = remaining[1:]
+    return "·".join(parts)
+
+
+# --------------------------------------------------------------------------
+# 高危 API 词典（key 用小写，匹配时统一小写化）
+# 值：(分类, 风险等级, 说明)
+# --------------------------------------------------------------------------
+
+HIGH_RISK_APIS: dict[str, tuple[str, str, str]] = {
+    # ---- 进程注入（严重）----
+    "createremotethread":    ("进程注入", "严重", "在远程进程中创建线程，常用于代码注入"),
+    "ntcreatethreadex":      ("进程注入", "严重", "原生层创建远程线程"),
+    "virtualallocex":        ("进程注入", "严重", "在远程进程中分配内存"),
+    "writeprocessmemory":    ("进程注入", "严重", "写入远程进程内存"),
+    "readprocessmemory":     ("进程注入", "严重", "读取远程进程内存"),
+    "openprocess":           ("进程注入", "中等", "打开远程进程句柄"),
+
+    # ---- 进程操作 ----
+    "terminateprocess":      ("进程操作", "中等", "终止指定进程"),
+    "createprocessa":        ("进程操作", "低",   "创建新进程（ANSI）"),
+    "createprocessw":        ("进程操作", "低",   "创建新进程（Unicode）"),
+    "shellexecutea":         ("进程操作", "低",   "执行外部命令（ANSI）"),
+    "shellexecutew":         ("进程操作", "低",   "执行外部命令（Unicode）"),
+    "winexec":               ("进程操作", "低",   "执行外部命令"),
+    "createprocessasusera":  ("进程操作", "中等", "以其他用户身份创建进程"),
+    "createprocessasuserw":  ("进程操作", "中等", "以其他用户身份创建进程"),
+
+    # ---- DLL 操作 ----
+    "loadlibrarya":          ("DLL 操作", "中等", "动态加载 DLL（ANSI）"),
+    "loadlibraryw":          ("DLL 操作", "中等", "动态加载 DLL（Unicode）"),
+    "loadlibraryexa":        ("DLL 操作", "中等", "从指定路径加载 DLL（ANSI）"),
+    "loadlibraryexw":        ("DLL 操作", "中等", "从指定路径加载 DLL（Unicode）"),
+    "getprocaddress":        ("DLL 操作", "中等", "获取 DLL 函数地址"),
+    "getmodulehandlea":      ("DLL 操作", "低",   "获取模块句柄（ANSI）"),
+    "getmodulehandlew":      ("DLL 操作", "低",   "获取模块句柄（Unicode）"),
+    "ldrloaddll":            ("DLL 操作", "中等", "原生层加载 DLL"),
+    "freelibrary":           ("DLL 操作", "低",   "释放 DLL"),
+    "freelibraryandexitthread": ("DLL 操作", "严重", "释放 DLL 并退出线程，常用于注入后退出宿主"),
+
+    # ---- 内存操作 ----
+    "virtualprotect":        ("内存操作", "中等", "修改内存页面保护属性"),
+    "virtualprotectex":      ("内存操作", "中等", "修改远程进程内存保护属性"),
+    "virtualalloc":          ("内存操作", "低",   "分配虚拟内存"),
+    "virtualfree":           ("内存操作", "低",   "释放虚拟内存"),
+    "virtualquery":          ("内存操作", "低",   "查询虚拟内存信息"),
+    "heapcreate":            ("内存操作", "低",   "创建堆"),
+    "heapalloc":             ("内存操作", "低",   "堆内存分配"),
+    "virtualqueryex":        ("内存操作", "低",   "查询远程进程虚拟内存"),
+
+    # ---- 注册表 ----
+    "regsetvalueexa":        ("注册表",   "中等", "设置注册表值（ANSI）"),
+    "regsetvalueexw":        ("注册表",   "中等", "设置注册表值（Unicode），常用于自启动"),
+    "regcreatekeyexa":       ("注册表",   "中等", "创建注册表键（ANSI）"),
+    "regcreatekeyexw":       ("注册表",   "中等", "创建注册表键（Unicode）"),
+    "regdeletekeya":         ("注册表",   "中等", "删除注册表键（ANSI）"),
+    "regdeletekeyw":         ("注册表",   "中等", "删除注册表键（Unicode）"),
+    "regdeletevaluea":       ("注册表",   "中等", "删除注册表值（ANSI）"),
+    "regdeletevaluew":       ("注册表",   "中等", "删除注册表值（Unicode）"),
+    "regopenkeyexa":         ("注册表",   "低",   "打开注册表键（ANSI）"),
+    "regopenkeyexw":         ("注册表",   "低",   "打开注册表键（Unicode）"),
+    "regenumkeyexa":         ("注册表",   "低",   "枚举注册表子键（Unicode）"),
+
+    # ---- 网络 ----
+    "wsastartup":            ("网络",     "中等", "初始化 Winsock"),
+    "socket":                ("网络",     "中等", "创建套接字"),
+    "connect":               ("网络",     "中等", "连接远程地址"),
+    "send":                  ("网络",     "中等", "发送数据"),
+    "recv":                  ("网络",     "中等", "接收数据"),
+    "internetopena":         ("网络",     "中等", "初始化 WinINet（ANSI）"),
+    "internetopenw":         ("网络",     "中等", "初始化 WinINet（Unicode）"),
+    "internetconnecta":      ("网络",     "中等", "连接服务器（ANSI）"),
+    "internetconnectw":      ("网络",     "中等", "连接服务器（Unicode）"),
+    "httpsendrequesta":      ("网络",     "中等", "发送 HTTP 请求（ANSI）"),
+    "httpsendrequestw":      ("网络",     "中等", "发送 HTTP 请求（Unicode）"),
+    "urldownloadtofilea":    ("网络",     "严重", "下载文件到本地（ANSI），常用于木马下载"),
+    "urldownloadtofilew":    ("网络",     "严重", "下载文件到本地（Unicode），常用于木马下载"),
+    "inetntoa":              ("网络",     "低",   "IP 地址转字符串"),
+    "gethostbyname":         ("网络",     "中等", "域名解析为 IP"),
+    "dnsquery":              ("网络",     "中等", "DNS 查询"),
+    "sendto":                ("网络",     "中等", "UDP 发送数据"),
+
+    # ---- 文件 ----
+    "createfilea":           ("文件",     "低",   "创建/打开文件（ANSI）"),
+    "createfilew":           ("文件",     "低",   "创建/打开文件（Unicode）"),
+    "writefile":             ("文件",     "低",   "写入文件"),
+    "readfile":              ("文件",     "低",   "读取文件"),
+    "deletefilea":           ("文件",     "中等", "删除文件（ANSI）"),
+    "deletefilew":           ("文件",     "中等", "删除文件（Unicode）"),
+    "movefilea":             ("文件",     "低",   "移动文件（ANSI）"),
+    "movefilew":             ("文件",     "低",   "移动文件（Unicode）"),
+    "copyfilea":             ("文件",     "低",   "复制文件（ANSI）"),
+    "copyfilew":             ("文件",     "低",   "复制文件（Unicode）"),
+    "createprocessinternala": ("文件",    "中等", "原生层创建进程（ANSI）"),
+    "createprocessinternalw": ("文件",    "中等", "原生层创建进程（Unicode）"),
+
+    # ---- 加密 ----
+    "cryptacquirecontexta":  ("加密",     "低",   "获取加密上下文（ANSI）"),
+    "cryptacquirecontextw":  ("加密",     "低",   "获取加密上下文（Unicode）"),
+    "cryptgenrandom":        ("加密",     "低",   "生成随机数"),
+    "cryptencrypt":          ("加密",     "低",   "加密数据"),
+    "cryptdecrypt":          ("加密",     "低",   "解密数据"),
+    "crypthashdata":         ("加密",     "低",   "计算哈希"),
+
+    # ---- 反调试（严重）----
+    "isdebuggerpresent":            ("反调试", "严重", "检测当前进程是否被调试"),
+    "checkremotedebuggerpresent":   ("反调试", "严重", "检测远程调试器"),
+    "ntqueryinformationprocess":    ("反调试", "中等", "查询进程信息，常用于反调试"),
+    "queryperformancecounter":      ("反调试", "中等", "性能计数器，常用于反调试时间检测"),
+    "gettickcount":                 ("反调试", "低",   "获取系统启动毫秒数"),
+    "ntquerysysteminformation":     ("反调试", "中等", "查询系统信息"),
+    "rtladjustprivilege":           ("反调试", "严重", "提权操作"),
+    "ntsetinformationprocess":      ("反调试", "严重", "设置进程信息"),
+    "zwqueryinformationprocess":    ("反调试", "中等", "原生层查询进程信息"),
+    "findwindowa":                  ("反调试", "中等", "查找窗口（ANSI），常用于检测调试器窗口"),
+    "findwindoww":                  ("反调试", "中等", "查找窗口（Unicode）"),
+
+    # ---- 键盘记录（严重）----
+    "setwindowshookexa":            ("键盘记录", "严重", "设置全局钩子（ANSI），常用于键盘记录"),
+    "setwindowshookexw":            ("键盘记录", "严重", "设置全局钩子（Unicode），常用于键盘记录"),
+    "getasynckeystate":             ("键盘记录", "严重", "获取异步按键状态，常用于键盘记录"),
+    "getkeystate":                  ("键盘记录", "中等", "获取按键状态"),
+    "registerhotkey":               ("键盘记录", "中等", "注册全局热键"),
+
+    # ---- 屏幕截图 ----
+    "bitblt":                       ("屏幕截图", "中等", "位图复制，可用于屏幕截图"),
+    "createcompatiblebitmap":       ("屏幕截图", "中等", "创建兼容位图"),
+    "getdesktopwindow":             ("屏幕截图", "低",   "获取桌面窗口句柄"),
+    "getdc":                        ("屏幕截图", "低",   "获取设备上下文"),
+    "getwindowdc":                  ("屏幕截图", "低",   "获取窗口设备上下文"),
+    "keybd_event":                  ("屏幕截图", "中等", "模拟键盘事件"),
+    "mouse_event":                  ("屏幕截图", "中等", "模拟鼠标事件"),
+    "printwindow":                  ("屏幕截图", "中等", "打印窗口内容，可用于截图"),
+
+    # ---- 自启动 / 持久化 ----
+    "createtoolhelp32snapshot":     ("自启动",   "中等", "创建进程快照，用于枚举进程"),
+    "adjusttokenprivileges":        ("自启动",   "严重", "调整令牌权限，常用于提权"),
+    "createservicea":               ("自启动",   "严重", "创建系统服务（ANSI），常用于持久化"),
+    "createservicew":               ("自启动",   "严重", "创建系统服务（Unicode），常用于持久化"),
+    "openscmanagera":               ("自启动",   "中等", "打开服务控制管理器（ANSI）"),
+    "openscmanagerw":               ("自启动",   "中等", "打开服务控制管理器（Unicode）"),
+    "startservicea":                ("自启动",   "中等", "启动系统服务（ANSI）"),
+    "startservicew":                ("自启动",   "中等", "启动系统服务（Unicode）"),
+    "createprocesswithlogonw":      ("自启动",   "中等", "使用其他凭据创建进程"),
+}
+
+
+def _scan_risky_imports(imports: list[ImportDLL]) -> list[RiskyImport]:
+    """扫描导入表，匹配高危 API 词典。"""
+    risky: list[RiskyImport] = []
+    for dll in imports:
+        for sym in dll.symbols:
+            name = sym.display
+            key = name.lower()
+            if key in HIGH_RISK_APIS:
+                category, risk_level, description = HIGH_RISK_APIS[key]
+                risky.append(RiskyImport(
+                    dll=dll.dll,
+                    function=name,
+                    category=category,
+                    risk_level=risk_level,
+                    description=description,
+                ))
+    return risky
 
 
 # --------------------------------------------------------------------------
@@ -178,6 +389,7 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
     for s in pe.sections:
         name = s.Name.rstrip(b"\x00").decode("utf-8", errors="replace") or "(无名)"
         entropy = float(s.get_entropy())
+        perms = section_perms(int(s.Characteristics))
         sections.append(
             SectionInfo(
                 name=name,
@@ -185,7 +397,8 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
                 raw_size=int(s.SizeOfRawData),
                 entropy=entropy,
                 characteristics=int(s.Characteristics),
-                perms=section_perms(int(s.Characteristics)),
+                perms=perms,
+                perms_zh=perms_to_zh(perms),
                 is_suspicious=entropy > ENTROPY_WARN,
             )
         )
@@ -205,6 +418,8 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
             else:
                 symbols.append(ImportSymbol(name=None, ordinal=int(imp.ordinal)))
         imports.append(ImportDLL(dll=dll, symbols=symbols))
+
+    risky_imports = _scan_risky_imports(imports)
 
     exports: list[ExportSymbol] = []
     exp = getattr(pe, "DIRECTORY_ENTRY_EXPORT", None)
@@ -244,8 +459,10 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
         sections=sections,
         imports=imports,
         exports=exports,
+        risky_imports=risky_imports,
         has_imports=bool(imports),
         has_exports=bool(exports),
+        has_risky_imports=bool(risky_imports),
         suspicious_sections=any(s.is_suspicious for s in sections),
         warnings=warnings,
     )

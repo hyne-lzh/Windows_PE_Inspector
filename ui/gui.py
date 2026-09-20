@@ -36,7 +36,14 @@ MIN_H = 560
 
 FONT_FAMILY = "Microsoft YaHei UI"  # 本机已实测可用；不带 UI 的 "Microsoft YaHei" 不存在
 
-TAB_NAMES = ("基本信息", "节区", "导入表", "导出表")
+TAB_NAMES = ("基本信息", "节区", "导入表", "导出表", "高危 API")
+
+# 高危 API 等级 → 颜色（用于 tag 着色）
+RISK_COLORS = {
+    "严重": "#d13438",   # 红
+    "中等": "#e0883a",   # 橙
+    "低":   "#888",        # 灰
+}
 PLACEHOLDER_TEXT = "尚未选择文件"
 
 # 状态栏配色：灰色 / 蓝色 / 绿色 / 红色
@@ -98,35 +105,16 @@ def _make_exception_handler(root):
 # 主题取色（让 ttk.Treeview 尽量贴合 customtkinter 当前主题）
 # --------------------------------------------------------------------------
 
-def _theme_color(root, widget_key, attr, fallback_light, fallback_dark):
-    """从 ctk.ThemeManager 取一个颜色，健壮处理 list(浅/深) / str / transparent / 缺失。
-
-    customtkinter 6.0.0 的 theme 值可能是 ``['gray86', 'gray17']`` 这样的
-    [浅色, 深色] 列表，也可能是 'transparent' 字符串；``CTkTabview`` 等键可能不存在。
-    """
-    dark = ctk.get_appearance_mode() == "Dark"
-    fallback = fallback_dark if dark else fallback_light
-    value = None
-    try:
-        value = ctk.ThemeManager.theme.get(widget_key, {}).get(attr)
-    except Exception:
-        value = None
-    if isinstance(value, (list, tuple)):
-        value = value[1] if (dark and len(value) > 1) else (value[0] if value else None)
-    if value in (None, "", "transparent"):
-        value = fallback
-    return value
-
-
-def apply_treeview_theme(root) -> ttk.Style:
-    """配置 ttk.Treeview 的样式，返回配置好的 Style。渲染表格前调用。"""
-    style = ttk.Style(root)
+def apply_treeview_theme(style: ttk.Style) -> None:
+    """在已创建的 ttk.Style 上配置 PE.Treeview 主题色（主窗口 __init__ 调用一次，渲染时不再重配）。"""
     style.theme_use("clam")
     dark = ctk.get_appearance_mode() == "Dark"
-    bg = _theme_color(root, "CTkFrame", "fg_color", "#f9f9fa", "#1d1e1e")
-    fg = _theme_color(root, "CTkLabel", "text_color", "#1a1a1a", "#dce4ee")
-    head_bg = "#e5e5e5" if not dark else "#2b2b2b"
-    sel = "#3b8ed0" if not dark else "#1f6aa5"
+    # 硬编码兜底色：实测 ctk.ThemeManager.theme 取色慢且字段缺失（CTkTabview 不存在），
+    # 直接用稳定值比每次渲染重新解析主题快得多。
+    if dark:
+        bg, fg, head_bg, sel = "#1d1e1e", "#dce4ee", "#2b2b2b", "#1f6aa5"
+    else:
+        bg, fg, head_bg, sel = "#f9f9fa", "#1a1a1a", "#e5e5e5", "#3b8ed0"
     style.configure("PE.Treeview", background=bg, foreground=fg,
                     fieldbackground=bg, rowheight=26, borderwidth=0)
     style.configure("PE.Treeview.Heading", background=head_bg, foreground=fg,
@@ -134,7 +122,6 @@ def apply_treeview_theme(root) -> ttk.Style:
     style.map("PE.Treeview",
               background=[("selected", sel)],
               foreground=[("selected", "#ffffff")])
-    return style
 
 
 # --------------------------------------------------------------------------
@@ -156,6 +143,10 @@ class MainWindow(ctk.CTk):
 
         self.font_normal = ctk.CTkFont(family=FONT_FAMILY, size=13)
         self.font_title = ctk.CTkFont(family=FONT_FAMILY, size=15, weight="bold")
+
+        # ttk.Style 一次性创建；configure 每次渲染调用很轻，但避免反复创建 Style 实例
+        self._style = ttk.Style(self)
+        apply_treeview_theme(self._style)
 
         # 线程与队列（契约见模块 docstring）
         self._queue: queue.Queue = queue.Queue()
@@ -275,7 +266,11 @@ class MainWindow(ctk.CTk):
         self._finish_busy()
         if kind == "ok":
             self.render(payload)
-            self.set_status(f"分析完成：{len(payload.sections)} 节区 / {len(payload.imports)} 个 DLL", "ok")
+            self.set_status(
+                f"分析完成：{len(payload.sections)} 节区 / {len(payload.imports)} 个 DLL"
+                f"{f' / {len(payload.risky_imports)} 高危 API' if payload.has_risky_imports else ''}",
+                "ok",
+            )
         else:
             self.clear_view()
             self.set_status(f"解析失败：{payload}", "error")
@@ -312,6 +307,7 @@ class MainWindow(ctk.CTk):
         self._render_sections(report)
         self._render_imports(report)
         self._render_exports(report)
+        self._render_risky_apis(report)
 
     def _render_info(self, report) -> None:
         self._clear_tab("基本信息")
@@ -354,27 +350,28 @@ class MainWindow(ctk.CTk):
     def _render_sections(self, report) -> None:
         self._clear_tab("节区")
         page = self.tabs.tab("节区")
-        apply_treeview_theme(self)
 
-        cols = ("name", "vsize", "rsize", "entropy", "perms", "flag")
+        cols = ("name", "vsize", "rsize", "entropy", "perms", "perms_zh", "flag")
         tree = ttk.Treeview(page, columns=cols, show="headings", style="PE.Treeview")
         for col, text, width, anchor in [
-            ("name", "名称", 130, "w"),
-            ("vsize", "虚拟大小", 100, "e"),
-            ("rsize", "原始大小", 100, "e"),
-            ("entropy", "熵值", 70, "e"),
-            ("perms", "权限", 90, "w"),
-            ("flag", "标记", 160, "w"),
+            ("name", "名称", 120, "w"),
+            ("vsize", "虚拟大小", 90, "e"),
+            ("rsize", "原始大小", 90, "e"),
+            ("entropy", "熵值", 65, "e"),
+            ("perms", "权限", 95, "w"),
+            ("perms_zh", "含义", 200, "w"),
+            ("flag", "标记", 150, "w"),
         ]:
             tree.heading(col, text=text)
             tree.column(col, width=width, anchor=anchor, stretch=True)
+        # tag 注册：suspect 行用红色（疑似加壳节区）
         tree.tag_configure("suspect", foreground="#d13438")
 
         for s in report.sections:
             tree.insert(
                 "", "end",
                 values=(s.name, human_size(s.virtual_size), human_size(s.raw_size),
-                        f"{s.entropy:.2f}", s.perms,
+                        f"{s.entropy:.2f}", s.perms, s.perms_zh,
                         "疑似加壳/加密" if s.is_suspicious else ""),
                 tags=("suspect",) if s.is_suspicious else (),
             )
@@ -390,7 +387,6 @@ class MainWindow(ctk.CTk):
         if not report.has_imports:
             self._placeholder("导入表", "(无导入表)")
             return
-        apply_treeview_theme(self)
 
         total = sum(len(d.symbols) for d in report.imports)
         head = ctk.CTkLabel(page, text=f"合计：{len(report.imports)} 个 DLL，{total} 个函数",
@@ -415,7 +411,6 @@ class MainWindow(ctk.CTk):
         if not report.has_exports:
             self._placeholder("导出表", "(无导出表，通常说明这是可执行程序而非 DLL)")
             return
-        apply_treeview_theme(self)
 
         cols = ("ordinal", "rva", "name", "fwd")
         tree = ttk.Treeview(page, columns=cols, show="headings", style="PE.Treeview")
@@ -431,6 +426,52 @@ class MainWindow(ctk.CTk):
         for sym in report.exports:
             tree.insert("", "end", values=(
                 sym.ordinal, f"0x{sym.rva:08X}", sym.name or "(仅序号)", sym.forwarder or ""))
+
+        sb = ttk.Scrollbar(page, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+    def _render_risky_apis(self, report) -> None:
+        self._clear_tab("高危 API")
+        page = self.tabs.tab("高危 API")
+        if not report.has_risky_imports:
+            self._placeholder("高危 API", "[ok] 未匹配到高危 API")
+            return
+
+        # 顶部分级统计
+        count_by_level = {"严重": 0, "中等": 0, "低": 0}
+        for r in report.risky_imports:
+            count_by_level[r.risk_level] = count_by_level.get(r.risk_level, 0) + 1
+        head_text = (
+            f"合计 {len(report.risky_imports)} 个高危 API"
+            f"　严重 {count_by_level['严重']}　中等 {count_by_level['中等']}　低 {count_by_level['低']}"
+        )
+        head = ctk.CTkLabel(page, text=head_text, font=self.font_normal, anchor="w")
+        head.pack(fill="x", padx=12, pady=(8, 2))
+
+        cols = ("dll", "function", "category", "risk", "desc")
+        tree = ttk.Treeview(page, columns=cols, show="headings", style="PE.Treeview")
+        for col, text, width, anchor in [
+            ("dll", "DLL", 180, "w"),
+            ("function", "函数", 220, "w"),
+            ("category", "分类", 100, "w"),
+            ("risk", "等级", 70, "center"),
+            ("desc", "说明", 360, "w"),
+        ]:
+            tree.heading(col, text=text)
+            tree.column(col, width=width, anchor=anchor, stretch=True)
+
+        # 风险等级 tag 注册（颜色按等级映射）
+        for level, color in RISK_COLORS.items():
+            tree.tag_configure(f"risk_{level}", foreground=color)
+
+        for r in report.risky_imports:
+            tree.insert(
+                "", "end",
+                values=(r.dll, r.function, r.category, r.risk_level, r.description),
+                tags=(f"risk_{r.risk_level}",),
+            )
 
         sb = ttk.Scrollbar(page, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=sb.set)
