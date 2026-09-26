@@ -1,0 +1,1972 @@
+{
+  "createremotethread": [
+    "进程注入",
+    "严重",
+    "在远程进程中创建线程，常用于代码注入"
+  ],
+  "ntcreatethreadex": [
+    "进程注入",
+    "严重",
+    "原生层创建远程线程"
+  ],
+  "virtualallocex": [
+    "进程注入",
+    "严重",
+    "在远程进程中分配内存"
+  ],
+  "writeprocessmemory": [
+    "进程注入",
+    "严重",
+    "写入远程进程内存"
+  ],
+  "readprocessmemory": [
+    "进程注入",
+    "严重",
+    "读取远程进程内存"
+  ],
+  "openprocess": [
+    "进程注入",
+    "中等",
+    "打开远程进程句柄"
+  ],
+  "terminateprocess": [
+    "进程操作",
+    "中等",
+    "终止指定进程"
+  ],
+  "createprocessa": [
+    "进程操作",
+    "低",
+    "创建新进程（ANSI）"
+  ],
+  "createprocessw": [
+    "进程操作",
+    "低",
+    "创建新进程（Unicode）"
+  ],
+  "shellexecutea": [
+    "进程操作",
+    "低",
+    "执行外部命令（ANSI）"
+  ],
+  "shellexecutew": [
+    "进程操作",
+    "低",
+    "执行外部命令（Unicode）"
+  ],
+  "winexec": [
+    "进程操作",
+    "低",
+    "执行外部命令"
+  ],
+  "createprocessasusera": [
+    "进程操作",
+    "中等",
+    "以其他用户身份创建进程"
+  ],
+  "createprocessasuserw": [
+    "进程操作",
+    "中等",
+    "以其他用户身份创建进程"
+  ],
+  "loadlibrarya": [
+    "DLL 操作",
+    "中等",
+    "动态加载 DLL（ANSI）"
+  ],
+  "loadlibraryw": [
+    "DLL 操作",
+    "中等",
+    "动态加载 DLL（Unicode）"
+  ],
+  "loadlibraryexa": [
+    "DLL 操作",
+    "中等",
+    "从指定路径加载 DLL（ANSI）"
+  ],
+  "loadlibraryexw": [
+    "DLL 操作",
+    "中等",
+    "从指定路径加载 DLL（Unicode）"
+  ],
+  "getprocaddress": [
+    "DLL 操作",
+    "中等",
+    "获取 DLL 函数地址"
+  ],
+  "getmodulehandlea": [
+    "DLL 操作",
+    "低",
+    "获取模块句柄（ANSI）"
+  ],
+  "getmodulehandlew": [
+    "DLL 操作",
+    "低",
+    "获取模块句柄（Unicode）"
+  ],
+  "ldrloaddll": [
+    "DLL 操作",
+    "中等",
+    "原生层加载 DLL"
+  ],
+  "freelibrary": [
+    "DLL 操作",
+    "低",
+    "释放 DLL"
+  ],
+  "freelibraryandexitthread": [
+    "DLL 操作",
+    "严重",
+    "释放 DLL 并退出线程，常用于注入后退出宿主"
+  ],
+  "virtualprotect": [
+    "内存操作",
+    "中等",
+    "修改内存页面保护属性"
+  ],
+  "virtualprotectex": [
+    "内存操作",
+    "中等",
+    "修改远程进程内存保护属性"
+  ],
+  "virtualalloc": [
+    "内存操作",
+    "低",
+    "分配虚拟内存"
+  ],
+  "virtualfree": [
+    "内存操作",
+    "低",
+    "释放虚拟内存"
+  ],
+  "virtualquery": [
+    "内存操作",
+    "低",
+    "查询虚拟内存信息"
+  ],
+  "heapcreate": [
+    "内存操作",
+    "低",
+    "创建堆"
+  ],
+  "heapalloc": [
+    "内存操作",
+    "低",
+    "堆内存分配"
+  ],
+  "virtualqueryex": [
+    "内存操作",
+    "低",
+    "查询远程进程虚拟内存"
+  ],
+  "regsetvalueexa": [
+    "注册表",
+    "中等",
+    "设置注册表值（ANSI）"
+  ],
+  "regsetvalueexw": [
+    "注册表",
+    "中等",
+    "设置注册表值（Unicode），常用于自启动"
+  ],
+  "regcreatekeyexa": [
+    "注册表",
+    "中等",
+    "创建注册表键（ANSI）"
+  ],
+  "regcreatekeyexw": [
+    "注册表",
+    "中等",
+    "创建注册表键（Unicode）"
+  ],
+  "regdeletekeya": [
+    "注册表",
+    "中等",
+    "删除注册表键（ANSI）"
+  ],
+  "regdeletekeyw": [
+    "注册表",
+    "中等",
+    "删除注册表键（Unicode）"
+  ],
+  "regdeletevaluea": [
+    "注册表",
+    "中等",
+    "删除注册表值（ANSI）"
+  ],
+  "regdeletevaluew": [
+    "注册表",
+    "中等",
+    "删除注册表值（Unicode）"
+  ],
+  "regopenkeyexa": [
+    "注册表",
+    "低",
+    "打开注册表键（ANSI）"
+  ],
+  "regopenkeyexw": [
+    "注册表",
+    "低",
+    "打开注册表键（Unicode）"
+  ],
+  "regenumkeyexa": [
+    "注册表",
+    "低",
+    "枚举注册表子键（Unicode）"
+  ],
+  "wsastartup": [
+    "网络",
+    "中等",
+    "初始化 Winsock"
+  ],
+  "socket": [
+    "网络",
+    "中等",
+    "创建套接字"
+  ],
+  "connect": [
+    "网络",
+    "中等",
+    "连接远程地址"
+  ],
+  "send": [
+    "网络",
+    "中等",
+    "发送数据"
+  ],
+  "recv": [
+    "网络",
+    "中等",
+    "接收数据"
+  ],
+  "internetopena": [
+    "网络",
+    "中等",
+    "初始化 WinINet（ANSI）"
+  ],
+  "internetopenw": [
+    "网络",
+    "中等",
+    "初始化 WinINet（Unicode）"
+  ],
+  "internetconnecta": [
+    "网络",
+    "中等",
+    "连接服务器（ANSI）"
+  ],
+  "internetconnectw": [
+    "网络",
+    "中等",
+    "连接服务器（Unicode）"
+  ],
+  "httpsendrequesta": [
+    "网络",
+    "中等",
+    "发送 HTTP 请求（ANSI）"
+  ],
+  "httpsendrequestw": [
+    "网络",
+    "中等",
+    "发送 HTTP 请求（Unicode）"
+  ],
+  "urldownloadtofilea": [
+    "网络",
+    "严重",
+    "下载文件到本地（ANSI），常用于木马下载"
+  ],
+  "urldownloadtofilew": [
+    "网络",
+    "严重",
+    "下载文件到本地（Unicode），常用于木马下载"
+  ],
+  "inetntoa": [
+    "网络",
+    "低",
+    "IP 地址转字符串"
+  ],
+  "gethostbyname": [
+    "网络",
+    "中等",
+    "域名解析为 IP"
+  ],
+  "dnsquery": [
+    "网络",
+    "中等",
+    "DNS 查询"
+  ],
+  "sendto": [
+    "网络",
+    "中等",
+    "UDP 发送数据"
+  ],
+  "createfilea": [
+    "文件",
+    "低",
+    "创建/打开文件（ANSI）"
+  ],
+  "createfilew": [
+    "文件",
+    "低",
+    "创建/打开文件（Unicode）"
+  ],
+  "writefile": [
+    "文件",
+    "低",
+    "写入文件"
+  ],
+  "readfile": [
+    "文件",
+    "低",
+    "读取文件"
+  ],
+  "deletefilea": [
+    "文件",
+    "中等",
+    "删除文件（ANSI）"
+  ],
+  "deletefilew": [
+    "文件",
+    "中等",
+    "删除文件（Unicode）"
+  ],
+  "movefilea": [
+    "文件",
+    "低",
+    "移动文件（ANSI）"
+  ],
+  "movefilew": [
+    "文件",
+    "低",
+    "移动文件（Unicode）"
+  ],
+  "copyfilea": [
+    "文件",
+    "低",
+    "复制文件（ANSI）"
+  ],
+  "copyfilew": [
+    "文件",
+    "低",
+    "复制文件（Unicode）"
+  ],
+  "createprocessinternala": [
+    "文件",
+    "中等",
+    "原生层创建进程（ANSI）"
+  ],
+  "createprocessinternalw": [
+    "文件",
+    "中等",
+    "原生层创建进程（Unicode）"
+  ],
+  "cryptacquirecontexta": [
+    "加密",
+    "低",
+    "获取加密上下文（ANSI）"
+  ],
+  "cryptacquirecontextw": [
+    "加密",
+    "低",
+    "获取加密上下文（Unicode）"
+  ],
+  "cryptgenrandom": [
+    "加密",
+    "低",
+    "生成随机数"
+  ],
+  "cryptencrypt": [
+    "加密",
+    "低",
+    "加密数据"
+  ],
+  "cryptdecrypt": [
+    "加密",
+    "低",
+    "解密数据"
+  ],
+  "crypthashdata": [
+    "加密",
+    "低",
+    "计算哈希"
+  ],
+  "isdebuggerpresent": [
+    "反调试",
+    "严重",
+    "检测当前进程是否被调试"
+  ],
+  "checkremotedebuggerpresent": [
+    "反调试",
+    "严重",
+    "检测远程调试器"
+  ],
+  "ntqueryinformationprocess": [
+    "反调试",
+    "中等",
+    "查询进程信息，常用于反调试"
+  ],
+  "queryperformancecounter": [
+    "反调试",
+    "中等",
+    "性能计数器，常用于反调试时间检测"
+  ],
+  "gettickcount": [
+    "反调试",
+    "低",
+    "获取系统启动毫秒数"
+  ],
+  "ntquerysysteminformation": [
+    "反调试",
+    "中等",
+    "查询系统信息"
+  ],
+  "rtladjustprivilege": [
+    "反调试",
+    "严重",
+    "提权操作"
+  ],
+  "ntsetinformationprocess": [
+    "反调试",
+    "严重",
+    "设置进程信息"
+  ],
+  "zwqueryinformationprocess": [
+    "反调试",
+    "中等",
+    "原生层查询进程信息"
+  ],
+  "findwindowa": [
+    "反调试",
+    "中等",
+    "查找窗口（ANSI），常用于检测调试器窗口"
+  ],
+  "findwindoww": [
+    "反调试",
+    "中等",
+    "查找窗口（Unicode）"
+  ],
+  "setwindowshookexa": [
+    "键盘记录",
+    "严重",
+    "设置全局钩子（ANSI），常用于键盘记录"
+  ],
+  "setwindowshookexw": [
+    "键盘记录",
+    "严重",
+    "设置全局钩子（Unicode），常用于键盘记录"
+  ],
+  "getasynckeystate": [
+    "键盘记录",
+    "严重",
+    "获取异步按键状态，常用于键盘记录"
+  ],
+  "getkeystate": [
+    "键盘记录",
+    "中等",
+    "获取按键状态"
+  ],
+  "registerhotkey": [
+    "键盘记录",
+    "中等",
+    "注册全局热键"
+  ],
+  "bitblt": [
+    "屏幕截图",
+    "中等",
+    "位图复制，可用于屏幕截图"
+  ],
+  "createcompatiblebitmap": [
+    "屏幕截图",
+    "中等",
+    "创建兼容位图"
+  ],
+  "getdesktopwindow": [
+    "屏幕截图",
+    "低",
+    "获取桌面窗口句柄"
+  ],
+  "getdc": [
+    "屏幕截图",
+    "低",
+    "获取设备上下文"
+  ],
+  "getwindowdc": [
+    "屏幕截图",
+    "低",
+    "获取窗口设备上下文"
+  ],
+  "keybd_event": [
+    "屏幕截图",
+    "中等",
+    "模拟键盘事件"
+  ],
+  "mouse_event": [
+    "屏幕截图",
+    "中等",
+    "模拟鼠标事件"
+  ],
+  "printwindow": [
+    "屏幕截图",
+    "中等",
+    "打印窗口内容，可用于截图"
+  ],
+  "createtoolhelp32snapshot": [
+    "自启动",
+    "中等",
+    "创建进程快照，用于枚举进程"
+  ],
+  "adjusttokenprivileges": [
+    "自启动",
+    "严重",
+    "调整令牌权限，常用于提权"
+  ],
+  "createservicea": [
+    "自启动",
+    "严重",
+    "创建系统服务（ANSI），常用于持久化"
+  ],
+  "createservicew": [
+    "自启动",
+    "严重",
+    "创建系统服务（Unicode），常用于持久化"
+  ],
+  "openscmanagera": [
+    "自启动",
+    "中等",
+    "打开服务控制管理器（ANSI）"
+  ],
+  "openscmanagerw": [
+    "自启动",
+    "中等",
+    "打开服务控制管理器（Unicode）"
+  ],
+  "startservicea": [
+    "自启动",
+    "中等",
+    "启动系统服务（ANSI）"
+  ],
+  "startservicew": [
+    "自启动",
+    "中等",
+    "启动系统服务（Unicode）"
+  ],
+  "createprocesswithlogonw": [
+    "自启动",
+    "中等",
+    "使用其他凭据创建进程"
+  ],
+  "createremotethreadex": [
+    "进程注入",
+    "严重",
+    "在远程进程创建线程并可传扩展属性，绕过部分注入监控"
+  ],
+  "ntunmapviewofsection": [
+    "进程注入",
+    "严重",
+    "取消映射目标进程内存映像，用于进程替换/空心化注入"
+  ],
+  "zwunmapviewofsection": [
+    "进程注入",
+    "严重",
+    "Zw* 版本取消内存映射，进程镂空常用"
+  ],
+  "queueuserapc": [
+    "进程注入",
+    "严重",
+    "向目标线程排队 APC，常用于 APC 注入"
+  ],
+  "ntqueueapcthread": [
+    "进程注入",
+    "严重",
+    "原生层排队 APC，绕过 Win32 层监控"
+  ],
+  "ntqueueapcthreadex": [
+    "进程注入",
+    "严重",
+    "扩展版原生 APC 排队，可指定保留内存"
+  ],
+  "ntqueueapcthreadex2": [
+    "进程注入",
+    "严重",
+    "新版 APC 排队接口，规避传统挂钩"
+  ],
+  "rtlcreateuserthread": [
+    "进程注入",
+    "严重",
+    "原生层在远程进程中创建用户线程"
+  ],
+  "ntallocatevirtualmemory": [
+    "进程注入",
+    "严重",
+    "原生层分配内存，替代 VirtualAllocEx"
+  ],
+  "zwallocatevirtualmemory": [
+    "进程注入",
+    "严重",
+    "Zw* 版本分配内存，常用于直接系统调用"
+  ],
+  "ntwritevirtualmemory": [
+    "进程注入",
+    "严重",
+    "原生层写进程内存，替代 WriteProcessMemory"
+  ],
+  "zwwritevirtualmemory": [
+    "进程注入",
+    "严重",
+    "Zw* 版本写进程内存"
+  ],
+  "ntreadvirtualmemory": [
+    "进程注入",
+    "严重",
+    "原生层读进程内存，可用于凭据窃取"
+  ],
+  "zwreadvirtualmemory": [
+    "进程注入",
+    "严重",
+    "Zw* 版本读进程内存"
+  ],
+  "ntprotectvirtualmemory": [
+    "进程注入",
+    "严重",
+    "原生层改内存属性为可执行，shellcode 落地前置"
+  ],
+  "zwprotectvirtualmemory": [
+    "进程注入",
+    "严重",
+    "Zw* 版本修改内存保护属性"
+  ],
+  "ntmapviewofsection": [
+    "进程注入",
+    "严重",
+    "映射共享内存节到进程，用于共享内存注入"
+  ],
+  "zwmapviewofsection": [
+    "进程注入",
+    "严重",
+    "Zw* 版本映射内存节"
+  ],
+  "ntcreatesection": [
+    "进程注入",
+    "中等",
+    "创建内存映射节，为共享内存/进程镂空做准备"
+  ],
+  "ntopenprocess": [
+    "进程注入",
+    "中等",
+    "原生层打开进程句柄，绕过 Win32 层监控"
+  ],
+  "zwopenprocess": [
+    "进程注入",
+    "中等",
+    "Zw* 版本打开进程句柄"
+  ],
+  "ntopenthread": [
+    "进程注入",
+    "中等",
+    "原生层打开线程句柄，注入前置"
+  ],
+  "ntsuspendprocess": [
+    "进程注入",
+    "严重",
+    "挂起整个目标进程，注入前常用"
+  ],
+  "ntresumeprocess": [
+    "进程注入",
+    "严重",
+    "恢复整个目标进程"
+  ],
+  "suspendthread": [
+    "进程注入",
+    "中等",
+    "挂起目标线程，线程上下文劫持前置"
+  ],
+  "resumethread": [
+    "进程注入",
+    "中等",
+    "恢复挂起线程，触发注入代码执行"
+  ],
+  "getthreadcontext": [
+    "进程注入",
+    "严重",
+    "读取线程上下文，进程镂空/线程劫持必需"
+  ],
+  "setthreadcontext": [
+    "进程注入",
+    "严重",
+    "改写线程执行上下文，使其指向注入代码"
+  ],
+  "wow64setthreadcontext": [
+    "进程注入",
+    "严重",
+    "WOW64 下改写线程上下文，绕过常规监控"
+  ],
+  "ntsetcontextthread": [
+    "进程注入",
+    "严重",
+    "原生层设置线程上下文"
+  ],
+  "ntcontinue": [
+    "进程注入",
+    "严重",
+    "恢复线程执行并应用新上下文，常用于绕过注入监控"
+  ],
+  "openthread": [
+    "进程注入",
+    "中等",
+    "打开目标线程句柄，注入前置"
+  ],
+  "ntcreateprocessex": [
+    "进程注入",
+    "严重",
+    "原生层创建进程，可用于进程替身"
+  ],
+  "ntcreateuserprocess": [
+    "进程注入",
+    "严重",
+    "原生层完整创建用户进程，绕过 Win32 层钩子"
+  ],
+  "globaladdatoma": [
+    "进程注入",
+    "中等",
+    "向全局原子表写入数据，AtomBombing 注入载体"
+  ],
+  "globaladdatomw": [
+    "进程注入",
+    "中等",
+    "向全局原子表写入数据（Unicode），AtomBombing 载体"
+  ],
+  "toolhelp32readprocessmemory": [
+    "进程注入",
+    "严重",
+    "Toolhelp 层读进程内存，规避常规 API 监控"
+  ],
+  "ntqueryvirtualmemory": [
+    "进程注入",
+    "中等",
+    "原生层查询内存属性，模块镂空与内存扫描"
+  ],
+  "shellexecuteexa": [
+    "进程操作",
+    "低",
+    "执行外部程序/命令（扩展版，ANSI）"
+  ],
+  "shellexecuteexw": [
+    "进程操作",
+    "低",
+    "执行外部程序/命令（扩展版，Unicode）"
+  ],
+  "terminatethread": [
+    "进程操作",
+    "中等",
+    "强制终止线程，可破坏目标进程或隐藏行为"
+  ],
+  "ntterminateprocess": [
+    "进程操作",
+    "中等",
+    "原生层终止进程，常用于关闭安全软件进程"
+  ],
+  "zwterminateprocess": [
+    "进程操作",
+    "中等",
+    "Zw* 版本终止进程"
+  ],
+  "ntterminatethread": [
+    "进程操作",
+    "中等",
+    "原生层终止线程"
+  ],
+  "createprocesswithtokenw": [
+    "进程操作",
+    "中等",
+    "以指定令牌创建进程，令牌窃取后横向执行"
+  ],
+  "debugactiveprocess": [
+    "进程操作",
+    "严重",
+    "附加调试到目标进程，可注入并控制其执行"
+  ],
+  "cocreateinstance": [
+    "进程操作",
+    "中等",
+    "创建 COM 对象，常用于 WMI/脚本/计划任务执行"
+  ],
+  "ldrgetprocedureaddress": [
+    "DLL 操作",
+    "中等",
+    "原生层解析导出函数地址，规避导入表静态检测"
+  ],
+  "ldrgetdllhandle": [
+    "DLL 操作",
+    "中等",
+    "原生层获取已加载模块句柄"
+  ],
+  "ntloaddriver": [
+    "DLL 操作",
+    "严重",
+    "原生层加载内核驱动，BYOVD 带漏洞驱动常用"
+  ],
+  "zwloaddriver": [
+    "DLL 操作",
+    "严重",
+    "Zw* 版本加载内核驱动"
+  ],
+  "setdlldirectorya": [
+    "DLL 操作",
+    "中等",
+    "指定 DLL 搜索目录，DLL 劫持常见手法"
+  ],
+  "setdlldirectoryw": [
+    "DLL 操作",
+    "中等",
+    "指定 DLL 搜索目录（Unicode），DLL 劫持常见手法"
+  ],
+  "adddlldirectory": [
+    "DLL 操作",
+    "中等",
+    "添加 DLL 搜索路径，用于 DLL 劫持"
+  ],
+  "createfilemappinga": [
+    "内存操作",
+    "中等",
+    "创建文件映射对象，用于内存加载载荷"
+  ],
+  "createfilemappingw": [
+    "内存操作",
+    "中等",
+    "创建文件映射对象（Unicode）"
+  ],
+  "mapviewoffile": [
+    "内存操作",
+    "中等",
+    "映射文件视图到内存，常用于内存加载 PE"
+  ],
+  "mapviewoffileex": [
+    "内存操作",
+    "中等",
+    "按指定地址映射文件视图"
+  ],
+  "openfilemappinga": [
+    "内存操作",
+    "中等",
+    "打开已存在文件映射，跨进程共享载荷"
+  ],
+  "openfilemappingw": [
+    "内存操作",
+    "中等",
+    "打开文件映射（Unicode）"
+  ],
+  "virtualalloc2": [
+    "内存操作",
+    "中等",
+    "扩展版内存分配，可指定保留/替换参数绕过检测"
+  ],
+  "setprocessdeppolicy": [
+    "内存操作",
+    "中等",
+    "关闭或调整 DEP 保护，便于执行内存中的代码"
+  ],
+  "regqueryvalueexa": [
+    "注册表",
+    "低",
+    "读取注册表值（ANSI）"
+  ],
+  "regqueryvalueexw": [
+    "注册表",
+    "低",
+    "读取注册表值（Unicode）"
+  ],
+  "regenumvaluea": [
+    "注册表",
+    "低",
+    "枚举注册表键值（ANSI）"
+  ],
+  "regenumvaluew": [
+    "注册表",
+    "低",
+    "枚举注册表键值（Unicode）"
+  ],
+  "regsetkeyvaluea": [
+    "注册表",
+    "中等",
+    "设置注册表值（ANSI，简版接口）"
+  ],
+  "regsetkeyvaluew": [
+    "注册表",
+    "中等",
+    "设置注册表值（Unicode，简版接口）"
+  ],
+  "regdeletekeyexa": [
+    "注册表",
+    "中等",
+    "删除注册表子键（ANSI）"
+  ],
+  "regdeletekeyexw": [
+    "注册表",
+    "中等",
+    "删除注册表子键（Unicode）"
+  ],
+  "regdeletekeyvaluea": [
+    "注册表",
+    "中等",
+    "删除指定注册表键值（ANSI）"
+  ],
+  "regdeletekeyvaluew": [
+    "注册表",
+    "中等",
+    "删除指定注册表键值（Unicode）"
+  ],
+  "regdeletetreea": [
+    "注册表",
+    "严重",
+    "递归删除整个注册表子树，破坏系统或安全配置"
+  ],
+  "regdeletetreew": [
+    "注册表",
+    "严重",
+    "递归删除注册表子树（Unicode）"
+  ],
+  "reggetvaluea": [
+    "注册表",
+    "低",
+    "读取注册表值（ANSI，简版接口）"
+  ],
+  "reggetvaluew": [
+    "注册表",
+    "低",
+    "读取注册表值（Unicode，简版接口）"
+  ],
+  "regsavekeya": [
+    "注册表",
+    "中等",
+    "导出注册表键到文件，常用于窃取 SAM 等配置单元"
+  ],
+  "regsavekeyw": [
+    "注册表",
+    "中等",
+    "导出注册表键到文件（Unicode）"
+  ],
+  "regloadkeya": [
+    "注册表",
+    "中等",
+    "加载注册表配置单元，配合离线凭据读取"
+  ],
+  "regloadkeyw": [
+    "注册表",
+    "中等",
+    "加载注册表配置单元（Unicode）"
+  ],
+  "regconnectregistrya": [
+    "注册表",
+    "中等",
+    "连接远程主机注册表，横向移动与远程篡改"
+  ],
+  "regconnectregistryw": [
+    "注册表",
+    "中等",
+    "连接远程主机注册表（Unicode）"
+  ],
+  "regreplacekeya": [
+    "注册表",
+    "严重",
+    "用文件替换注册表键数据，可整体劫持配置"
+  ],
+  "regreplacekeyw": [
+    "注册表",
+    "严重",
+    "替换注册表键数据（Unicode）"
+  ],
+  "regoverridepredefkey": [
+    "注册表",
+    "严重",
+    "重定向预定义注册表根键，可劫持所有后续访问"
+  ],
+  "regsetkeysecurity": [
+    "注册表",
+    "中等",
+    "修改注册表键安全描述符，隐藏持久化项"
+  ],
+  "ntcreatekey": [
+    "注册表",
+    "中等",
+    "原生层创建注册表键"
+  ],
+  "ntsetvaluekey": [
+    "注册表",
+    "中等",
+    "原生层写注册表，绕过 Win32 层监控"
+  ],
+  "zwsetvaluekey": [
+    "注册表",
+    "中等",
+    "Zw* 版本写注册表"
+  ],
+  "ntdeletekey": [
+    "注册表",
+    "中等",
+    "原生层删除注册表键"
+  ],
+  "ntdeletevaluekey": [
+    "注册表",
+    "中等",
+    "原生层删除注册表值"
+  ],
+  "wsasocketa": [
+    "网络",
+    "中等",
+    "创建套接字（WSA 扩展版，ANSI）"
+  ],
+  "wsasocketw": [
+    "网络",
+    "中等",
+    "创建套接字（WSA 扩展版，Unicode）"
+  ],
+  "wsaconnect": [
+    "网络",
+    "中等",
+    "发起连接（WSA 扩展版）"
+  ],
+  "wsasend": [
+    "网络",
+    "中等",
+    "发送数据（WSA 扩展版）"
+  ],
+  "wsarecv": [
+    "网络",
+    "中等",
+    "接收数据（WSA 扩展版）"
+  ],
+  "bind": [
+    "网络",
+    "中等",
+    "将套接字绑定到本地端口，后门监听前置"
+  ],
+  "listen": [
+    "网络",
+    "中等",
+    "监听端口，后门/反向 shell 特征"
+  ],
+  "accept": [
+    "网络",
+    "中等",
+    "接受入站连接，后门特征"
+  ],
+  "recvfrom": [
+    "网络",
+    "中等",
+    "UDP 接收数据"
+  ],
+  "dnsquery_a": [
+    "网络",
+    "中等",
+    "DNS 查询（ANSI 变体），常用于 DGA 域名解析"
+  ],
+  "internetopenurla": [
+    "网络",
+    "严重",
+    "一步打开 URL 并读取，常用于下载载荷"
+  ],
+  "internetopenurlw": [
+    "网络",
+    "严重",
+    "一步打开 URL 并读取（Unicode）"
+  ],
+  "internetreadfile": [
+    "网络",
+    "中等",
+    "读取 HTTP 响应内容，下载载荷或接收指令"
+  ],
+  "internetreadfileexa": [
+    "网络",
+    "中等",
+    "读取 HTTP 响应（扩展版）"
+  ],
+  "internetwritefile": [
+    "网络",
+    "中等",
+    "向服务器上传数据，数据外传"
+  ],
+  "httpopenrequesta": [
+    "网络",
+    "中等",
+    "创建 HTTP 请求句柄（ANSI）"
+  ],
+  "httpopenrequestw": [
+    "网络",
+    "中等",
+    "创建 HTTP 请求句柄（Unicode）"
+  ],
+  "httpsendrequestexa": [
+    "网络",
+    "中等",
+    "发送 HTTP 请求（扩展版，可带请求体）"
+  ],
+  "httpsendrequestexw": [
+    "网络",
+    "中等",
+    "发送 HTTP 请求（扩展版，Unicode）"
+  ],
+  "ftpputfilea": [
+    "网络",
+    "中等",
+    "通过 FTP 上传文件，数据外传"
+  ],
+  "ftpputfilew": [
+    "网络",
+    "中等",
+    "通过 FTP 上传文件（Unicode）"
+  ],
+  "ftpgetfilea": [
+    "网络",
+    "中等",
+    "通过 FTP 下载文件"
+  ],
+  "ftpgetfilew": [
+    "网络",
+    "中等",
+    "通过 FTP 下载文件（Unicode）"
+  ],
+  "urldownloadtocachefilea": [
+    "网络",
+    "中等",
+    "下载到 IE 缓存目录，载荷投放"
+  ],
+  "urldownloadtocachefilew": [
+    "网络",
+    "中等",
+    "下载到 IE 缓存目录（Unicode）"
+  ],
+  "urlopenblockingstreama": [
+    "网络",
+    "中等",
+    "阻塞式打开 URL 流，下载器常用"
+  ],
+  "urlopenblockingstreamw": [
+    "网络",
+    "中等",
+    "阻塞式打开 URL 流（Unicode）"
+  ],
+  "icmpsendecho": [
+    "网络",
+    "中等",
+    "发送 ICMP 回声包，ICMP 隧道 C2"
+  ],
+  "icmpsendecho2": [
+    "网络",
+    "中等",
+    "异步 ICMP 回声，ICMP 隧道通信"
+  ],
+  "createnamedpipea": [
+    "网络",
+    "中等",
+    "创建命名管道，后门通信/令牌模拟提权"
+  ],
+  "createnamedpipew": [
+    "网络",
+    "中等",
+    "创建命名管道（Unicode）"
+  ],
+  "connectnamedpipe": [
+    "网络",
+    "中等",
+    "等待客户端连接命名管道，C2 通道"
+  ],
+  "callnamedpipea": [
+    "网络",
+    "中等",
+    "连接命名管道并收发数据（ANSI）"
+  ],
+  "callnamedpipew": [
+    "网络",
+    "中等",
+    "连接命名管道并收发数据（Unicode）"
+  ],
+  "transactnamedpipe": [
+    "网络",
+    "中等",
+    "命名管道单次读写，C2 信道"
+  ],
+  "findfirstfilea": [
+    "文件",
+    "低",
+    "枚举目录文件（ANSI），常用于遍历加密目标"
+  ],
+  "findfirstfilew": [
+    "文件",
+    "低",
+    "枚举目录文件（Unicode），勒索遍历常用"
+  ],
+  "gettemppatha": [
+    "文件",
+    "低",
+    "获取临时目录路径（ANSI），载荷投放常见位置"
+  ],
+  "gettemppathw": [
+    "文件",
+    "低",
+    "获取临时目录路径（Unicode）"
+  ],
+  "setfileattributesa": [
+    "文件",
+    "中等",
+    "修改文件属性（ANSI），可隐藏文件"
+  ],
+  "setfileattributesw": [
+    "文件",
+    "中等",
+    "修改文件属性（Unicode），可隐藏文件"
+  ],
+  "setfiletime": [
+    "文件",
+    "中等",
+    "篡改文件时间戳，Timestomping 反取证"
+  ],
+  "movefileexa": [
+    "文件",
+    "中等",
+    "移动/重命名文件（ANSI，可延迟到重启替换系统文件）"
+  ],
+  "movefileexw": [
+    "文件",
+    "中等",
+    "移动/重命名文件（Unicode，可延迟到重启）"
+  ],
+  "getlogicaldrives": [
+    "文件",
+    "低",
+    "枚举逻辑驱动器，用于遍历加密或传播"
+  ],
+  "ntcreatefile": [
+    "文件",
+    "中等",
+    "原生层创建/打开文件，绕过 Win32 监控"
+  ],
+  "ntwritefile": [
+    "文件",
+    "中等",
+    "原生层写文件，绕过 Win32 监控"
+  ],
+  "ntdeletefile": [
+    "文件",
+    "中等",
+    "原生层删除文件"
+  ],
+  "cryptgenkey": [
+    "加密",
+    "中等",
+    "生成对称密钥，勒索加密常用"
+  ],
+  "cryptderivekey": [
+    "加密",
+    "中等",
+    "由口令派生密钥"
+  ],
+  "cryptimportkey": [
+    "加密",
+    "中等",
+    "导入密钥，用内置密钥解密载荷"
+  ],
+  "cryptexportkey": [
+    "加密",
+    "中等",
+    "导出密钥，可与 C2 交换密钥"
+  ],
+  "cryptstringtobinarya": [
+    "加密",
+    "低",
+    "Base64 等字符串解码（ANSI），常用于解密配置或载荷"
+  ],
+  "cryptstringtobinaryw": [
+    "加密",
+    "低",
+    "Base64 等字符串解码（Unicode）"
+  ],
+  "cryptbinarytostringa": [
+    "加密",
+    "低",
+    "二进制编码为字符串（ANSI），数据外传编码"
+  ],
+  "cryptbinarytostringw": [
+    "加密",
+    "低",
+    "二进制编码为字符串（Unicode）"
+  ],
+  "cryptprotectdata": [
+    "加密",
+    "中等",
+    "用 DPAPI 加密数据，可保护窃取数据或自身配置"
+  ],
+  "cryptunprotectdata": [
+    "加密",
+    "严重",
+    "用 DPAPI 解密用户凭据，窃取浏览器密码/令牌"
+  ],
+  "bcryptopenalgorithmprovider": [
+    "加密",
+    "低",
+    "打开 CNG 算法提供者，现代勒索常用"
+  ],
+  "bcryptencrypt": [
+    "加密",
+    "中等",
+    "CNG 加密数据（现代勒索加密路径）"
+  ],
+  "bcryptdecrypt": [
+    "加密",
+    "中等",
+    "CNG 解密数据"
+  ],
+  "bcryptgeneratekeypair": [
+    "加密",
+    "中等",
+    "生成非对称密钥对，勒索混合加密常用"
+  ],
+  "bcryptgenrandom": [
+    "加密",
+    "低",
+    "生成密码学随机数"
+  ],
+  "pfximportcertstore": [
+    "加密",
+    "中等",
+    "导入 PFX 证书包，可用于植入恶意根证书"
+  ],
+  "outputdebugstringa": [
+    "反调试",
+    "中等",
+    "输出调试字符串，可据响应时间检测调试器"
+  ],
+  "outputdebugstringw": [
+    "反调试",
+    "中等",
+    "输出调试字符串（Unicode），调试器探测"
+  ],
+  "ntqueryobject": [
+    "反调试",
+    "中等",
+    "查询内核对象信息，可枚举调试对象/句柄"
+  ],
+  "ntclose": [
+    "反调试",
+    "中等",
+    "关闭句柄；传入被占用句柄触发异常以检测调试器"
+  ],
+  "findwindowexa": [
+    "反调试",
+    "中等",
+    "枚举子窗口（ANSI），检测分析工具窗口"
+  ],
+  "findwindowexw": [
+    "反调试",
+    "中等",
+    "枚举子窗口（Unicode）"
+  ],
+  "enumwindows": [
+    "反调试",
+    "中等",
+    "枚举所有顶层窗口，查找调试/监控工具"
+  ],
+  "ntgetcontextthread": [
+    "反调试",
+    "中等",
+    "原生层读取线程上下文，检测硬件断点"
+  ],
+  "ntsetinformationthread": [
+    "反调试",
+    "严重",
+    "设置线程信息，可将线程从调试器隐藏"
+  ],
+  "zwsetinformationthread": [
+    "反调试",
+    "严重",
+    "Zw* 版本隐藏线程，常见反调试手法"
+  ],
+  "ntqueryinformationthread": [
+    "反调试",
+    "中等",
+    "查询线程信息，检测调试/隐藏状态"
+  ],
+  "ntdelayexecution": [
+    "反调试",
+    "中等",
+    "原生层延时，绕过 Sleep 挂钩与沙箱快进"
+  ],
+  "zwquerysysteminformation": [
+    "反调试",
+    "中等",
+    "Zw* 版本查询系统信息，枚举进程/探测内核调试器"
+  ],
+  "rtlgetversion": [
+    "反调试",
+    "低",
+    "获取真实系统版本，环境判断"
+  ],
+  "getnativesysteminfo": [
+    "反调试",
+    "低",
+    "获取真实系统信息，沙箱/虚拟机检测"
+  ],
+  "iswow64process": [
+    "反调试",
+    "低",
+    "判断是否运行在 WOW64 下"
+  ],
+  "globalmemorystatusex": [
+    "反调试",
+    "低",
+    "获取内存容量，虚拟机/沙箱资源检测"
+  ],
+  "getlogicalprocessorinformation": [
+    "反调试",
+    "低",
+    "获取 CPU 核心数，沙箱资源检测"
+  ],
+  "getcursorpos": [
+    "反调试",
+    "低",
+    "获取鼠标位置，检测用户活动/沙箱"
+  ],
+  "getlastinputinfo": [
+    "反调试",
+    "低",
+    "获取上次输入时间，无人值守沙箱检测"
+  ],
+  "getforegroundwindow": [
+    "键盘记录",
+    "中等",
+    "获取当前前台窗口，用于记录输入上下文"
+  ],
+  "getkeyboardstate": [
+    "键盘记录",
+    "严重",
+    "一次性获取全部按键状态，键盘记录"
+  ],
+  "getrawinputdata": [
+    "键盘记录",
+    "严重",
+    "读取原始输入数据，可绕过钩子记录按键"
+  ],
+  "getrawinputbuffer": [
+    "键盘记录",
+    "严重",
+    "批量读取原始输入，高强度键盘记录"
+  ],
+  "registerrawinputdevices": [
+    "键盘记录",
+    "中等",
+    "注册原始输入设备，原始输入键盘记录前置"
+  ],
+  "getrawinputdeviceinfoa": [
+    "键盘记录",
+    "中等",
+    "获取输入设备信息（ANSI），识别按键来源设备"
+  ],
+  "getrawinputdeviceinfow": [
+    "键盘记录",
+    "中等",
+    "获取输入设备信息（Unicode）"
+  ],
+  "setwineventhook": [
+    "键盘记录",
+    "中等",
+    "设置 WinEvent 钩子，监控 UI 与输入事件"
+  ],
+  "attachthreadinput": [
+    "键盘记录",
+    "中等",
+    "绑定目标线程输入队列，注入式输入窃取"
+  ],
+  "getclipboarddata": [
+    "键盘记录",
+    "严重",
+    "读取剪贴板内容，窃取复制的密码/文本"
+  ],
+  "setclipboarddata": [
+    "键盘记录",
+    "中等",
+    "写入剪贴板，常用于劫持加密货币地址"
+  ],
+  "openclipboard": [
+    "键盘记录",
+    "中等",
+    "打开剪贴板，剪贴板监控前置"
+  ],
+  "addclipboardformatlistener": [
+    "键盘记录",
+    "中等",
+    "注册剪贴板变更监听，持续监控剪贴板"
+  ],
+  "sendinput": [
+    "键盘记录",
+    "严重",
+    "合成键盘/鼠标输入，模拟用户操作"
+  ],
+  "blockinput": [
+    "键盘记录",
+    "严重",
+    "锁定键盘鼠标输入，恶意接管主机"
+  ],
+  "postthreadmessagea": [
+    "键盘记录",
+    "中等",
+    "向指定线程投递消息（ANSI），跨进程输入控制"
+  ],
+  "postthreadmessagew": [
+    "键盘记录",
+    "中等",
+    "向指定线程投递消息（Unicode）"
+  ],
+  "stretchblt": [
+    "屏幕截图",
+    "中等",
+    "缩放位块传输，截图后缩放处理"
+  ],
+  "getdibits": [
+    "屏幕截图",
+    "中等",
+    "读取位图像素数据，导出截图内容"
+  ],
+  "getwindowtexta": [
+    "屏幕截图",
+    "中等",
+    "获取窗口标题（ANSI），记录用户操作上下文"
+  ],
+  "getwindowtextw": [
+    "屏幕截图",
+    "中等",
+    "获取窗口标题（Unicode）"
+  ],
+  "enumdesktopwindows": [
+    "屏幕截图",
+    "低",
+    "枚举桌面所有窗口，屏幕/环境探测"
+  ],
+  "changeserviceconfiga": [
+    "自启动",
+    "严重",
+    "修改已有服务配置（ANSI），劫持服务实现持久化"
+  ],
+  "changeserviceconfigw": [
+    "自启动",
+    "严重",
+    "修改已有服务配置（Unicode），服务劫持"
+  ],
+  "changeserviceconfig2a": [
+    "自启动",
+    "严重",
+    "修改服务扩展配置（ANSI，如 ServiceDll/描述）"
+  ],
+  "changeserviceconfig2w": [
+    "自启动",
+    "严重",
+    "修改服务扩展配置（Unicode）"
+  ],
+  "openservicea": [
+    "自启动",
+    "中等",
+    "打开已有服务句柄（ANSI），服务劫持"
+  ],
+  "openservicew": [
+    "自启动",
+    "中等",
+    "打开已有服务句柄（Unicode）"
+  ],
+  "controlservice": [
+    "自启动",
+    "中等",
+    "控制服务状态，可用于停止安全软件"
+  ],
+  "deleteservice": [
+    "自启动",
+    "中等",
+    "删除服务，破坏防护或清理痕迹"
+  ],
+  "startservicectrldispatchera": [
+    "自启动",
+    "中等",
+    "作为服务主入口连接 SCM（ANSI），服务型木马"
+  ],
+  "startservicectrldispatcherw": [
+    "自启动",
+    "中等",
+    "作为服务主入口连接 SCM（Unicode）"
+  ],
+  "netuseradd": [
+    "自启动",
+    "中等",
+    "创建本地用户账号，权限维持"
+  ],
+  "getusernamea": [
+    "信息收集",
+    "中等",
+    "获取当前用户名（ANSI），主机指纹与身份探测"
+  ],
+  "getusernamew": [
+    "信息收集",
+    "中等",
+    "获取当前用户名（Unicode）"
+  ],
+  "getcomputernamea": [
+    "信息收集",
+    "中等",
+    "获取计算机名（ANSI），主机指纹"
+  ],
+  "getcomputernamew": [
+    "信息收集",
+    "中等",
+    "获取计算机名（Unicode）"
+  ],
+  "getmodulefilenamea": [
+    "信息收集",
+    "低",
+    "获取模块完整路径（ANSI），定位自身或系统目录"
+  ],
+  "getmodulefilenamew": [
+    "信息收集",
+    "低",
+    "获取模块完整路径（Unicode）"
+  ],
+  "getcurrenthwprofilea": [
+    "信息收集",
+    "中等",
+    "获取硬件配置文件 GUID（ANSI），主机唯一标识"
+  ],
+  "getcurrenthwprofilew": [
+    "信息收集",
+    "中等",
+    "获取硬件配置文件 GUID（Unicode）"
+  ],
+  "enumprocesses": [
+    "信息收集",
+    "低",
+    "枚举全部进程 PID，查找注入目标或分析工具"
+  ],
+  "enumdevicedrivers": [
+    "信息收集",
+    "低",
+    "枚举已加载内核驱动，探测安全软件与虚拟化"
+  ],
+  "process32first": [
+    "信息收集",
+    "低",
+    "遍历进程快照首项，进程枚举"
+  ],
+  "process32next": [
+    "信息收集",
+    "低",
+    "遍历进程快照后续项，进程枚举"
+  ],
+  "netuserenum": [
+    "信息收集",
+    "中等",
+    "枚举本地用户账号，环境侦察"
+  ],
+  "openprocesstoken": [
+    "凭据窃取",
+    "严重",
+    "打开进程访问令牌，令牌窃取前置"
+  ],
+  "openthreadtoken": [
+    "凭据窃取",
+    "严重",
+    "打开线程令牌，模拟已登录用户"
+  ],
+  "duplicatetoken": [
+    "凭据窃取",
+    "严重",
+    "复制访问令牌"
+  ],
+  "duplicatetokenex": [
+    "凭据窃取",
+    "严重",
+    "复制令牌并指定类型，令牌窃取提权"
+  ],
+  "impersonateloggedonuser": [
+    "凭据窃取",
+    "严重",
+    "模拟已登录用户身份执行代码"
+  ],
+  "impersonatenamedpipeclient": [
+    "凭据窃取",
+    "严重",
+    "模拟命名管道客户端，Potato 系列提权常用"
+  ],
+  "setthreadtoken": [
+    "凭据窃取",
+    "严重",
+    "为线程设置令牌，切换执行身份"
+  ],
+  "reverttoself": [
+    "凭据窃取",
+    "中等",
+    "结束身份模拟，恢复自身令牌"
+  ],
+  "lookupprivilegevaluea": [
+    "凭据窃取",
+    "中等",
+    "查询特权 LUID（ANSI），提权前置"
+  ],
+  "lookupprivilegevaluew": [
+    "凭据窃取",
+    "中等",
+    "查询特权 LUID（Unicode）"
+  ],
+  "gettokeninformation": [
+    "凭据窃取",
+    "中等",
+    "查询令牌信息，判断权限与完整性级别"
+  ],
+  "settokeninformation": [
+    "凭据窃取",
+    "严重",
+    "修改令牌信息，可提升完整性级别"
+  ],
+  "checktokenmembership": [
+    "凭据窃取",
+    "中等",
+    "检查令牌是否属于指定组，权限判断"
+  ],
+  "logonusera": [
+    "凭据窃取",
+    "严重",
+    "用明文口令登录并获取令牌（ANSI），口令验证/爆破"
+  ],
+  "logonuserw": [
+    "凭据窃取",
+    "严重",
+    "用明文口令登录并获取令牌（Unicode）"
+  ],
+  "lsaopenpolicy": [
+    "凭据窃取",
+    "中等",
+    "打开本地安全策略句柄，凭据操作前置"
+  ],
+  "lsaretrieveprivatedata": [
+    "凭据窃取",
+    "严重",
+    "读取 LSA 私有数据，窃取系统保存的凭据"
+  ],
+  "lsaenumeratelogonsessions": [
+    "凭据窃取",
+    "中等",
+    "枚举系统登录会话"
+  ],
+  "credreada": [
+    "凭据窃取",
+    "严重",
+    "读取凭据管理器保存的凭据（ANSI）"
+  ],
+  "credreadw": [
+    "凭据窃取",
+    "严重",
+    "读取凭据管理器保存的凭据（Unicode）"
+  ],
+  "credenumeratea": [
+    "凭据窃取",
+    "严重",
+    "枚举凭据管理器中的全部凭据（ANSI）"
+  ],
+  "credenumeratew": [
+    "凭据窃取",
+    "严重",
+    "枚举凭据管理器中的全部凭据（Unicode）"
+  ],
+  "minidumpwritedump": [
+    "凭据窃取",
+    "严重",
+    "生成进程内存转储，常用于 dump lsass 窃取凭据"
+  ],
+  "ntadjustprivilegestoken": [
+    "凭据窃取",
+    "严重",
+    "原生层调整令牌特权，绕过 Win32 层监控"
+  ],
+  "zwadjustprivilegestoken": [
+    "凭据窃取",
+    "严重",
+    "Zw* 版本调整令牌特权"
+  ],
+  "ntduplicateobject": [
+    "防御规避",
+    "中等",
+    "复制内核对象句柄，可隐藏或转移句柄"
+  ],
+  "ntmaketemporaryobject": [
+    "防御规避",
+    "中等",
+    "将对象设为临时，进程退出后自动删除以隐藏痕迹"
+  ],
+  "setprocessvalidcalltargets": [
+    "防御规避",
+    "中等",
+    "篡改 CFG 合法调用目标，绕过控制流防护"
+  ],
+  "amsiscanbuffer": [
+    "防御规避",
+    "严重",
+    "AMSI 扫描缓冲接口，出现即高度疑似 AMSI 绕过"
+  ],
+  "amsiscanstring": [
+    "防御规避",
+    "严重",
+    "AMSI 扫描字符串接口，脚本免杀常见"
+  ],
+  "setwindowlonga": [
+    "防御规避",
+    "中等",
+    "修改窗口过程（ANSI），子类化劫持 UI 行为"
+  ],
+  "setwindowlongw": [
+    "防御规避",
+    "中等",
+    "修改窗口过程（Unicode）"
+  ],
+  "setwindowlongptra": [
+    "防御规避",
+    "中等",
+    "修改窗口过程（ANSI，64 位安全版）"
+  ],
+  "setwindowlongptrw": [
+    "防御规避",
+    "中等",
+    "修改窗口过程（Unicode，64 位安全版）"
+  ],
+  "setsystemtime": [
+    "防御规避",
+    "中等",
+    "修改系统时间，干扰日志与取证"
+  ],
+  "setlocaltime": [
+    "防御规避",
+    "中等",
+    "修改本地时间，时间反取证"
+  ],
+  "ntsetsystemenvironmentvalueex": [
+    "防御规避",
+    "中等",
+    "修改固件环境变量，固件级持久化"
+  ],
+  "netshareenum": [
+    "横向移动",
+    "中等",
+    "枚举远程主机共享，横向侦察"
+  ],
+  "netshareadd": [
+    "横向移动",
+    "中等",
+    "创建网络共享，用于投放或外传文件"
+  ],
+  "netsharesetinfo": [
+    "横向移动",
+    "中等",
+    "修改共享配置"
+  ],
+  "netserverenum": [
+    "横向移动",
+    "中等",
+    "枚举域/网络中的服务器，横向侦察"
+  ],
+  "netsessionenum": [
+    "横向移动",
+    "中等",
+    "枚举网络会话，横向侦察"
+  ],
+  "wnetaddconnection2a": [
+    "横向移动",
+    "中等",
+    "映射远程共享驱动器（ANSI），横向投放载荷"
+  ],
+  "wnetaddconnection2w": [
+    "横向移动",
+    "中等",
+    "映射远程共享驱动器（Unicode）"
+  ],
+  "wnetopenenuma": [
+    "横向移动",
+    "低",
+    "枚举网络资源（ANSI）"
+  ],
+  "wnetopenenumw": [
+    "横向移动",
+    "低",
+    "枚举网络资源（Unicode）"
+  ],
+  "netgroupadduser": [
+    "横向移动",
+    "中等",
+    "将用户加入用户组，权限提升"
+  ],
+  "netlocalgroupaddmembers": [
+    "横向移动",
+    "中等",
+    "添加本地组成员，权限提升与维持"
+  ],
+  "exitwindowsex": [
+    "系统破坏",
+    "严重",
+    "关机/重启/注销系统，破坏性操作"
+  ],
+  "ntshutdownsystem": [
+    "系统破坏",
+    "严重",
+    "原生层强制关闭系统"
+  ],
+  "ntraiseharderror": [
+    "系统破坏",
+    "严重",
+    "触发系统硬错误，可强制蓝屏"
+  ],
+  "rtlsetprocessiscritical": [
+    "系统破坏",
+    "严重",
+    "将自身标记为系统关键进程，被终止即触发蓝屏"
+  ],
+  "lockworkstation": [
+    "系统破坏",
+    "中等",
+    "锁定工作站，勒索干扰用户操作"
+  ],
+  "encryptfilea": [
+    "系统破坏",
+    "严重",
+    "调用 EFS 加密文件（ANSI），勒索加密"
+  ],
+  "encryptfilew": [
+    "系统破坏",
+    "严重",
+    "调用 EFS 加密文件（Unicode）"
+  ],
+  "initiatesystemshutdowna": [
+    "系统破坏",
+    "严重",
+    "发起系统关机/重启（ANSI，可远程）"
+  ],
+  "initiatesystemshutdownw": [
+    "系统破坏",
+    "严重",
+    "发起系统关机/重启（Unicode）"
+  ],
+  "initiatesystemshutdownexa": [
+    "系统破坏",
+    "严重",
+    "发起系统关机并附带原因（ANSI）"
+  ],
+  "initiatesystemshutdownexw": [
+    "系统破坏",
+    "严重",
+    "发起系统关机并附带原因（Unicode）"
+  ],
+  "waveinopen": [
+    "音视频采集",
+    "中等",
+    "打开音频输入设备，可用于麦克风窃听"
+  ],
+  "waveinstart": [
+    "音视频采集",
+    "中等",
+    "开始音频采集输入，录音窃听"
+  ],
+  "capcreatecapturewindow": [
+    "音视频采集",
+    "中等",
+    "创建视频捕获窗口，可用于摄像头拍照/录像"
+  ]
+}

@@ -23,6 +23,7 @@ from tkinter import filedialog, messagebox, ttk
 import customtkinter as ctk
 
 from achieve.pe_parser import PeParseError, human_size, parse_pe
+from achieve.report_exporter import export_report
 
 # --------------------------------------------------------------------------
 # 全局常量
@@ -36,7 +37,10 @@ MIN_H = 560
 
 FONT_FAMILY = "Microsoft YaHei UI"  # 本机已实测可用；不带 UI 的 "Microsoft YaHei" 不存在
 
-TAB_NAMES = ("基本信息", "节区", "导入表", "导出表", "高危 API")
+TAB_NAMES = ("基本信息", "节区", "导入表", "导出表", "高危 API", "字符串")
+
+# 字符串分页最多展示的"其他"类条数（超大文件防卡顿，完整内容用导出报告查看）
+STRING_OTHERS_LIMIT = 2000
 
 # 高危 API 等级 → 颜色（用于 tag 着色）
 RISK_COLORS = {
@@ -151,6 +155,8 @@ class MainWindow(ctk.CTk):
         # 线程与队列（契约见模块 docstring）
         self._queue: queue.Queue = queue.Queue()
         self._worker: threading.Thread | None = None
+        # 最近一次解析成功的报告（供「导出报告」使用）
+        self._report = None
 
         self._build_layout()
         self.clear_view()
@@ -191,7 +197,13 @@ class MainWindow(ctk.CTk):
 
         self.btn_analyze = ctk.CTkButton(
             bar, text="开始分析", width=100, font=self.font_normal, command=self._on_analyze)
-        self.btn_analyze.grid(row=0, column=3, padx=(0, 12), pady=12)
+        self.btn_analyze.grid(row=0, column=3, padx=(0, 8), pady=12)
+
+        # 导出报告：分析成功后才可用
+        self.btn_export = ctk.CTkButton(
+            bar, text="导出报告", width=90, font=self.font_normal,
+            command=self._on_export, state="disabled")
+        self.btn_export.grid(row=0, column=4, padx=(0, 12), pady=12)
 
     def _build_tabs(self) -> None:
         # 注意：customtkinter 6.0.0 的 CTkTabview 不支持 font 参数（5.x 教程里才有）
@@ -221,6 +233,30 @@ class MainWindow(ctk.CTk):
         )
         if path:
             self.path_var.set(path)
+
+    def _on_export(self) -> None:
+        """把当前报告导出为 HTML / Excel（按保存对话框的扩展名自动判断格式）。"""
+        if self._report is None:
+            self.set_status("请先分析文件，再导出报告", "error")
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="导出报告",
+            defaultextension=".html",
+            filetypes=[("HTML 报告", "*.html"), ("Excel 报告", "*.xlsx"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            saved = export_report(self._report, path, fmt="auto")
+        except Exception as exc:  # noqa: BLE001
+            self.set_status(f"导出失败：{exc}", "error")
+            try:
+                messagebox.showerror("导出失败", str(exc))
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        self.set_status(f"报告已导出：{saved}", "ok")
 
     def _on_analyze(self) -> None:
         if self._worker is not None and self._worker.is_alive():
@@ -265,13 +301,20 @@ class MainWindow(ctk.CTk):
 
         self._finish_busy()
         if kind == "ok":
+            # 记住报告，供「导出报告」按钮使用
+            self._report = payload
+            self.btn_export.configure(state="normal")
             self.render(payload)
             self.set_status(
                 f"分析完成：{len(payload.sections)} 节区 / {len(payload.imports)} 个 DLL"
-                f"{f' / {len(payload.risky_imports)} 高危 API' if payload.has_risky_imports else ''}",
+                f"{f' / {len(payload.risky_imports)} 高危 API' if payload.has_risky_imports else ''}"
+                f"{f' / {payload.string_count} 字符串' if payload.string_count else ''}",
                 "ok",
             )
         else:
+            # 解析失败：清掉旧报告并禁用导出，避免导出到过期数据
+            self._report = None
+            self.btn_export.configure(state="disabled")
             self.clear_view()
             self.set_status(f"解析失败：{payload}", "error")
             try:
@@ -308,6 +351,7 @@ class MainWindow(ctk.CTk):
         self._render_imports(report)
         self._render_exports(report)
         self._render_risky_apis(report)
+        self._render_strings(report)
 
     def _render_info(self, report) -> None:
         self._clear_tab("基本信息")
@@ -472,6 +516,56 @@ class MainWindow(ctk.CTk):
                 values=(r.dll, r.function, r.category, r.risk_level, r.description),
                 tags=(f"risk_{r.risk_level}",),
             )
+
+        sb = ttk.Scrollbar(page, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+    def _render_strings(self, report) -> None:
+        """渲染「字符串」分页：分类命中的可疑项优先，其余限制条数以防超大文件卡死界面。"""
+        self._clear_tab("字符串")
+        page = self.tabs.tab("字符串")
+        classes = report.string_classes or {}
+        summary = report.strings_summary or {}
+
+        if not report.string_count:
+            self._placeholder("字符串", "(未提取到字符串)")
+            return
+
+        ok = summary.get("external_ok")
+        counts = " / ".join(
+            f"{label} {len(classes.get(key) or [])}"
+            for key, label in (("urls", "URL"), ("ips", "IP"),
+                               ("registry", "注册表"), ("paths", "路径"), ("pdb", "PDB"))
+        )
+        head = ctk.CTkLabel(
+            page,
+            text=f"来源 {summary.get('source', '?')}（外部工具 {'成功' if ok else '未使用/失败'}）"
+                 f"　共 {report.string_count} 条　{counts}",
+            font=self.font_normal, anchor="w",
+        )
+        head.pack(fill="x", padx=12, pady=(8, 2))
+
+        tree = ttk.Treeview(page, columns=("cat", "value"), show="headings", style="PE.Treeview")
+        for col, text, width, anchor in [("cat", "类别", 90, "w"), ("value", "字符串", 660, "w")]:
+            tree.heading(col, text=text)
+            tree.column(col, width=width, anchor=anchor, stretch=True)
+
+        # 分类命中的（URL / IP / 注册表 / 路径 / PDB）优先展示——这些才是可疑线索
+        for key, label in (("urls", "URL"), ("ips", "IP"),
+                           ("registry", "注册表"), ("paths", "路径"), ("pdb", "PDB")):
+            for value in classes.get(key) or []:
+                tree.insert("", "end", values=(label, value))
+
+        # 其他类限制条数，避免超大文件把界面卡死
+        others = classes.get("others") or []
+        for value in others[:STRING_OTHERS_LIMIT]:
+            tree.insert("", "end", values=("其他", value))
+        hidden = len(others) - STRING_OTHERS_LIMIT
+        if hidden > 0:
+            tree.insert("", "end",
+                        values=("提示", f"... 其余 {hidden} 条未显示，可用「导出报告」查看完整内容"))
 
         sb = ttk.Scrollbar(page, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=sb.set)

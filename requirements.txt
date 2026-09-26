@@ -10,6 +10,9 @@ customtkinter==6.0.0
 # darkdetect==0.8.0
 # packaging==26.3
 
+# 报告导出（Excel 格式所需）
+openpyxl==3.1.5
+
 # ---------- 编译工具（仅打包 exe 时需要，日常开发无需安装）----------
 # 安装方式：pip install nuitka
 # 编译说明见 md/nuitka_install.md

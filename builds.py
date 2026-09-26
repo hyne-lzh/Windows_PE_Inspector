@@ -465,6 +465,13 @@ def build(backend: str, jobs: int | None, dry_run: bool) -> int:
     if jobs:
         cmd.append(f"--jobs={jobs}")
     cmd += COMMON_ARGS
+    # 运行时数据文件：外置词典与字符串提取工具。
+    # 打包后若缺失，程序不会崩，但会静默降级（词典退回内置条目 / 字符串退回 pefile 单来源）。
+    # 这里"存在才包含"，避免资源文件缺失时反而让编译失败。
+    if (ROOT / "assets").is_dir():
+        cmd.append("--include-data-dir=assets=assets")
+    if (ROOT / "strings.exe").is_file():
+        cmd.append("--include-data-files=strings.exe=strings.exe")
     cmd.append(ENTRY.name)
 
     log(f"后端       : {BACKEND_DESC[backend]}")

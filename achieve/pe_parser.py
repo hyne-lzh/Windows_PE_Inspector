@@ -7,13 +7,25 @@
 from __future__ import annotations
 
 import datetime
+import json
+import math
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pefile
 
+from .strings_extractor import classify_strings, extract_strings
+
 # 节区熵值超过该阈值即提示"疑似加壳/加密"（8.0 为理论上限）
 ENTROPY_WARN = 7.2
+
+# 采样熵：节区原始数据超过该阈值时改用采样估算（全量算熵在大文件上很慢）
+ENTROPY_SAMPLE_THRESHOLD = 50 * 1024 * 1024   # 50 MB 以上走采样
+ENTROPY_SAMPLE_SIZE = 4 * 1024 * 1024          # 采样 4 MB
+
+# 安全上限：超过该大小直接拒绝解析（本工具要面对恶意样本，不能让它耗尽内存）
+MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024        # 2 GB
 
 # 节区特征位（挑常用的）
 SECTION_FLAGS = (
@@ -78,6 +90,7 @@ class SectionInfo:
     perms: str                  # 缩写如 "CODEXR"
     perms_zh: str               # 中文含义如 "代码·可执行·可读"
     is_suspicious: bool         # entropy > ENTROPY_WARN
+    entropy_sampled: bool = False  # True = 该熵值是采样估算（节区过大，非全量）
 
 
 @dataclass
@@ -113,6 +126,9 @@ class PeReport:
     imports: list[ImportDLL] = field(default_factory=list)
     exports: list[ExportSymbol] = field(default_factory=list)
     risky_imports: list[RiskyImport] = field(default_factory=list)
+    strings_summary: dict = field(default_factory=dict)  # extract_strings 完整结果（含来源/失败原因）
+    string_count: int = 0                                # 合并去重后的字符串总数
+    string_classes: dict = field(default_factory=dict)   # classify_strings 分类结果
     has_imports: bool = False
     has_exports: bool = False
     has_risky_imports: bool = False
@@ -186,11 +202,61 @@ def perms_to_zh(perms: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# 采样熵（性能：超大节区不再全量计算）
+# --------------------------------------------------------------------------
+
+def _entropy_of(data: bytes) -> float:
+    """计算字节序列的香农熵（0~8）。与 pefile 的 get_entropy() 算法一致。"""
+    if not data:
+        return 0.0
+    counts = Counter(data)
+    total = len(data)
+    ent = 0.0
+    for c in counts.values():
+        p = c / total
+        ent -= p * math.log2(p)
+    return ent
+
+
+def _sampled_data(data: bytes, sample_size: int) -> bytes:
+    """从大块数据里采样：取头、中、尾三段各 sample_size/3，兼顾代表性与速度。"""
+    if len(data) <= sample_size:
+        return data
+    third = max(1, sample_size // 3)
+    head = data[:third]
+    mid_start = (len(data) - third) // 2
+    mid = data[mid_start:mid_start + third]
+    tail = data[-third:]
+    return head + mid + tail
+
+
+def section_entropy(section, sample_threshold: int = ENTROPY_SAMPLE_THRESHOLD) -> tuple[float, bool]:
+    """计算节区熵值，返回 (熵值, 是否采样)。
+
+    - 节区数据 <= sample_threshold（默认 50 MB）：全量计算，结果精确
+    - 超过阈值：改用 4 MB 采样估算，避免大文件上几十秒的卡顿
+    """
+    try:
+        data = section.get_data()
+    except Exception:  # noqa: BLE001
+        # get_data 可能失败（如 SizeOfRawData 为 0），回退到 pefile 自带实现
+        try:
+            return float(section.get_entropy()), False
+        except Exception:  # noqa: BLE001
+            return 0.0, False
+
+    if len(data) > sample_threshold:
+        return _entropy_of(_sampled_data(data, ENTROPY_SAMPLE_SIZE)), True
+    return _entropy_of(data), False
+
+
+# --------------------------------------------------------------------------
 # 高危 API 词典（key 用小写，匹配时统一小写化）
 # 值：(分类, 风险等级, 说明)
 # --------------------------------------------------------------------------
 
-HIGH_RISK_APIS: dict[str, tuple[str, str, str]] = {
+# 内置兜底词典（仅在 assets/high_risk_apis.json 缺失/损坏时启用）
+_BUILTIN_HIGH_RISK_APIS: dict[str, tuple[str, str, str]] = {
     # ---- 进程注入（严重）----
     "createremotethread":    ("进程注入", "严重", "在远程进程中创建线程，常用于代码注入"),
     "ntcreatethreadex":      ("进程注入", "严重", "原生层创建远程线程"),
@@ -328,6 +394,34 @@ HIGH_RISK_APIS: dict[str, tuple[str, str, str]] = {
 }
 
 
+# 外置词典路径（项目根 assets/ 下，用户可自行编辑扩充，无需改代码）
+RISK_DICT_PATH = Path(__file__).resolve().parent.parent / "assets" / "high_risk_apis.json"
+
+
+def _load_high_risk_apis() -> dict[str, tuple[str, str, str]]:
+    """从 assets/high_risk_apis.json 加载高危 API 词典。
+
+    外置的目的：让用户能自行编辑/扩充词条，不必改动 Python 代码。
+    加载失败（文件缺失、格式错误）时回退到内置条目，保证功能不残废。
+    """
+    try:
+        with RISK_DICT_PATH.open(encoding="utf-8") as fh:
+            raw = json.load(fh)
+        loaded: dict[str, tuple[str, str, str]] = {}
+        for key, val in raw.items():
+            if isinstance(val, (list, tuple)) and len(val) == 3:
+                loaded[str(key).lower()] = (str(val[0]), str(val[1]), str(val[2]))
+        if loaded:
+            return loaded
+    except Exception:  # noqa: BLE001
+        pass
+    return dict(_BUILTIN_HIGH_RISK_APIS)
+
+
+# 实际生效的词典（外部 JSON 优先，内置条目兜底）
+HIGH_RISK_APIS: dict[str, tuple[str, str, str]] = _load_high_risk_apis()
+
+
 def _scan_risky_imports(imports: list[ImportDLL]) -> list[RiskyImport]:
     """扫描导入表，匹配高危 API 词典。"""
     risky: list[RiskyImport] = []
@@ -352,12 +446,26 @@ def _scan_risky_imports(imports: list[ImportDLL]) -> list[RiskyImport]:
 # --------------------------------------------------------------------------
 
 def parse_pe(path) -> PeReport:
-    """解析 PE 文件，失败时抛 PeParseError（含中文文案与退出码）。"""
-    p = Path(path).expanduser()
-    if not p.is_file():
-        raise PeParseError(f"文件不存在：{p}", exit_code=1)
+    """解析 PE 文件，失败时抛 PeParseError（含中文文案与退出码）。
 
+    安全约束（审查项，不可回退）：
+    - **无论解析在哪一步失败，都保证 pe.close() 被执行**，句柄不泄漏
+    - **所有异常统一翻译为 PeParseError**，避免调用方（CLI/GUI）收到裸 traceback
+    - 超过 MAX_FILE_SIZE 的文件直接拒绝，防止恶意大文件耗尽内存
+    """
+    pe = None
     try:
+        p = Path(path).expanduser()
+        if not p.is_file():
+            raise PeParseError(f"文件不存在：{p}", exit_code=1)
+
+        size = p.stat().st_size
+        if size > MAX_FILE_SIZE:
+            raise PeParseError(
+                f"文件过大（{human_size(size)} > {human_size(MAX_FILE_SIZE)}），已拒绝解析",
+                exit_code=1,
+            )
+
         pe = pefile.PE(str(p), fast_load=True)
         pe.parse_data_directories(
             directories=[
@@ -365,15 +473,25 @@ def parse_pe(path) -> PeReport:
                 pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"],
             ]
         )
+        return _build_report(pe, p)
+    except PeParseError:
+        raise
     except pefile.PEFormatError as exc:
         raise PeParseError(f"不是有效的 PE 文件：{exc}", exit_code=2) from exc
     except OSError as exc:
         raise PeParseError(f"无法读取文件：{exc}", exit_code=1) from exc
-
-    try:
-        return _build_report(pe, p)
+    except Exception as exc:  # noqa: BLE001
+        # 畸形 PE 会触发 pefile 内部各种异常（struct.error / ValueError 等），
+        # 统一兜住，绝不裸抛给调用方——CLI 会 traceback，GUI 会闪退。
+        raise PeParseError(
+            f"PE 结构异常，解析已中止：{type(exc).__name__}: {exc}", exit_code=2
+        ) from exc
     finally:
-        pe.close()
+        if pe is not None:
+            try:
+                pe.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _build_report(pe: pefile.PE, p: Path) -> PeReport:
@@ -388,7 +506,7 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
     sections: list[SectionInfo] = []
     for s in pe.sections:
         name = s.Name.rstrip(b"\x00").decode("utf-8", errors="replace") or "(无名)"
-        entropy = float(s.get_entropy())
+        entropy, sampled = section_entropy(s)
         perms = section_perms(int(s.Characteristics))
         sections.append(
             SectionInfo(
@@ -400,6 +518,7 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
                 perms=perms,
                 perms_zh=perms_to_zh(perms),
                 is_suspicious=entropy > ENTROPY_WARN,
+                entropy_sampled=sampled,
             )
         )
 
@@ -420,6 +539,11 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
         imports.append(ImportDLL(dll=dll, symbols=symbols))
 
     risky_imports = _scan_risky_imports(imports)
+
+    # 字符串提取：strings.exe（外部工具）+ pefile（兜底）双重来源
+    strings_summary = extract_strings(str(p), min_length=5)
+    merged_strings = strings_summary.get("merged", [])
+    string_classes = classify_strings(merged_strings)
 
     exports: list[ExportSymbol] = []
     exp = getattr(pe, "DIRECTORY_ENTRY_EXPORT", None)
@@ -460,6 +584,9 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
         imports=imports,
         exports=exports,
         risky_imports=risky_imports,
+        strings_summary=strings_summary,
+        string_count=len(merged_strings),
+        string_classes=string_classes,
         has_imports=bool(imports),
         has_exports=bool(exports),
         has_risky_imports=bool(risky_imports),

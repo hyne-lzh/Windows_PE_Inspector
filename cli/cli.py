@@ -19,6 +19,7 @@ import argparse
 import sys
 
 from achieve.pe_parser import ENTROPY_WARN, PeParseError, human_size, parse_pe
+from achieve.report_exporter import export_report
 
 # 中文输出在 GBK 控制台下容易报 UnicodeEncodeError，统一切到 UTF-8。
 for _stream in (sys.stdout, sys.stderr):
@@ -112,6 +113,29 @@ def show_risks(r) -> None:
     )
 
 
+def show_strings(r) -> None:
+    rule("字符串提取（strings.exe + pefile 双重来源）")
+    summary = r.strings_summary or {}
+    ok = summary.get("external_ok")
+    print(f"来源       : {summary.get('source', '?')}（外部工具 {'成功' if ok else '未使用/失败'}）")
+    if summary.get("error"):
+        print(f"外部工具   : {summary['error']}")
+    print(f"字符串总数 : {r.string_count}")
+    classes = r.string_classes or {}
+    for key, label in (("urls", "URL"), ("ips", "IP"),
+                       ("registry", "注册表"), ("paths", "路径"), ("pdb", "PDB")):
+        items = classes.get(key) or []
+        if items:
+            print(f"\n  [{label}] 命中 {len(items)} 条，前 20 条：")
+            for s in items[:20]:
+                print(f"    {s}")
+    others = classes.get("others") or []
+    if others:
+        print(f"\n  [其他] 前 10 条：")
+        for s in others[:10]:
+            print(f"    {s}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Windows PE Inspector（命令行版）：纯静态解析 PE 文件，不运行样本",
@@ -122,6 +146,10 @@ def main() -> int:
     parser.add_argument("--imports", action="store_true", help="显示导入表")
     parser.add_argument("--exports", action="store_true", help="显示导出表")
     parser.add_argument("--risks", action="store_true", help="显示高危 API 列表")
+    parser.add_argument("--strings", action="store_true", help="显示提取到的字符串")
+    parser.add_argument("--export", metavar="PATH", help="导出报告到文件（.html 或 .xlsx）")
+    parser.add_argument("--format", choices=["html", "xlsx", "auto"], default="auto",
+                        help="导出格式，默认按扩展名自动判断")
     parser.add_argument("--all", action="store_true", help="显示全部信息（默认行为）")
     args = parser.parse_args()
 
@@ -132,7 +160,8 @@ def main() -> int:
         return exc.exit_code
 
     show_all = args.all or not (
-        args.header or args.sections or args.imports or args.exports or args.risks
+        args.header or args.sections or args.imports or args.exports
+        or args.risks or args.strings or args.export
     )
 
     if show_all or args.header:
@@ -145,6 +174,16 @@ def main() -> int:
         show_exports(report)
     if show_all or args.risks:
         show_risks(report)
+    if show_all or args.strings:
+        show_strings(report)
+
+    if args.export:
+        try:
+            saved = export_report(report, args.export, fmt=args.format)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[x] 报告导出失败：{exc}")
+            return 1
+        print(f"[+] 报告已导出：{saved}")
 
     print()
     print("解析完成（纯静态分析，样本从未被执行）。")
