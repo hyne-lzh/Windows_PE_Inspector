@@ -494,21 +494,17 @@ class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
         state = _TableState(tree, tuple(rows), count_label, is_tree)
         var.trace_add("write", lambda *_: self._apply_search(state, var.get()))
 
-        # 表格 + 双向滚动条放在自己的容器里（分页本身还要用 pack 放标题/搜索框，
-        # 同一个父容器不能混用 pack 与 grid），容器内再按 grid 布局。
-        holder = ctk.CTkFrame(page, fg_color="transparent")
-        holder.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        holder.grid_rowconfigure(0, weight=1)
-        holder.grid_columnconfigure(0, weight=1)
-
-        ysb = ttk.Scrollbar(holder, orient="vertical", command=tree.yview)
-        xsb = ttk.Scrollbar(holder, orient="horizontal", command=tree.xview)
+        # 布局：全部用 pack。⚠️ 不要用「中间容器 + tree.grid(in_=holder)」的跨父布局——
+        # Treeview 的父容器是 page，把布局目标换成另一个容器时 Tk 不会正确计算尺寸，
+        # 表格会整片空白（统计行数正常但看不到任何行）。正确做法：先 pack 滚动条占边缘，
+        # 最后 pack tree 让它填满剩余空间。
+        ysb = ttk.Scrollbar(page, orient="vertical", command=tree.yview)
+        xsb = ttk.Scrollbar(page, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
 
-        # 表格创建时以 page 为父容器，这里用 in_ 把它排进 holder（Tk 允许的跨父布局）
-        tree.grid(in_=holder, row=0, column=0, sticky="nsew")
-        ysb.grid(row=0, column=1, sticky="ns")
-        xsb.grid(row=1, column=0, sticky="ew")
+        xsb.pack(side="bottom", fill="x", padx=12, pady=(0, 10))
+        ysb.pack(side="right", fill="y", padx=(0, 12))
+        tree.pack(side="left", fill="both", expand=True, padx=(12, 0))
 
         self._apply_search(state, var.get())
 
