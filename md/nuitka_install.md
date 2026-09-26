@@ -324,6 +324,7 @@ python builds.py --backend zig
 | 参数 | 作用 |
 |------|------|
 | `--enable-plugin=tk-inter` | **启用 tkinter 插件**，打包 tcl/tk 运行时文件（**本项目必需**） |
+| `--include-package=tkinterdnd2` + `--include-package-data=tkinterdnd2` | 打包文件拖放库及其 **tkdnd 二进制**。tkinterdnd2 自带原生 tkdnd，Nuitka 不会自动带上；**缺了这两条 exe 运行会报缺 tkdnd**（界面拖放失效甚至启动异常） |
 | `--windows-console-mode=disable` | 不创建、不使用控制台窗口（GUI 必备，等价 pythonw 行为） |
 
 ### 优化

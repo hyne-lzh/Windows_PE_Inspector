@@ -122,8 +122,12 @@ def show_strings(r) -> None:
         print(f"外部工具   : {summary['error']}")
     print(f"字符串总数 : {r.string_count}")
     classes = r.string_classes or {}
+    # 前 5 类是可疑线索，后 4 类是编译产物噪音（API / DLL / 节区名 / XML），
+    # 单列出来是为了让「其他」里剩下的才是真正值得人工看的内容。
     for key, label in (("urls", "URL"), ("ips", "IP"),
-                       ("registry", "注册表"), ("paths", "路径"), ("pdb", "PDB")):
+                       ("registry", "注册表"), ("paths", "路径"), ("pdb", "PDB"),
+                       ("xml", "XML"), ("sections", "节区名"),
+                       ("dlls", "DLL 名称"), ("apis", "API 名称")):
         items = classes.get(key) or []
         if items:
             print(f"\n  [{label}] 命中 {len(items)} 条，前 20 条：")

@@ -20,7 +20,7 @@
 对外接口
 --------
 - extract_strings(path, min_length=4, use_external=True, timeout=30, strings_exe=None) -> dict
-- classify_strings(strings) -> dict
+- classify_strings(strings, known_apis=None, known_sections=None) -> dict
 """
 
 from __future__ import annotations
@@ -210,6 +210,37 @@ _REG_RE = re.compile(r"HKEY_|HK[A-Z]{2,3}\\|\\Software\\", re.IGNORECASE)
 _PATH_RE = re.compile(r"^[A-Za-z]:\\|\\\\")
 _PDB_RE = re.compile(r"\.pdb", re.IGNORECASE)
 
+# XML / SxS manifest 片段特征（编译产物噪音，不是 IOC 线索）
+_XML_HINTS = (
+    "<?xml", "<assembly", "</assembly", "xmlns=", "</dependency",
+    "<dependency", "<assemblyidentity", "</assemblyidentity",
+    "urn:schemas-microsoft-com", "<trustinfo", "<security",
+    "<requestedprivileges", "<requestedexecutionlevel", "<compatibility",
+)
+
+# 分类 key 的固定顺序（返回 dict 时 10 个 key 恒存在，没命中也给空列表）
+_CLASS_KEYS = ("urls", "ips", "registry", "paths", "pdb",
+               "xml", "sections", "dlls", "apis", "others")
+
+# strings.exe 扫不到导入表时可用的常见节区名兜底名单（含加壳器节区）
+_DEFAULT_SECTIONS = (
+    ".text", ".textbss", ".code", ".rdata", ".rodata", ".data", ".pdata",
+    ".didat", ".rsrc", ".reloc", ".tls", ".bss", ".idata", ".edata",
+    ".debug", ".crt", ".vmp0", ".vmp1", ".upx0", ".upx1", ".aspack",
+    ".nsp0", ".nsp1", ".petite",
+)
+
+# 模块名：xxx.dll / xxx.exe / xxx.sys
+_DLL_RE = re.compile(r"^[A-Za-z0-9_.\-]+\.(dll|exe|sys)$", re.IGNORECASE)
+
+# known_apis 缺失时的启发式前缀（Win32 / Native / 内核常见动宾前缀）
+_API_PREFIXES = (
+    "Get", "Set", "Reg", "Create", "Open", "Close", "Find", "Load", "Free",
+    "Is", "Nt", "Zw", "Rtl", "Ldr", "Io", "Ke", "Mm", "Ob", "Ps",
+    "Global", "Local", "Heap", "Virtual", "Write", "Read", "Delete", "Enum",
+    "Query", "Crypt", "Shell", "Send", "Post", "Lsa", "Dbg", "Co", "Cert",
+)
+
 
 def _looks_like_ip(candidate: str) -> bool:
     """校验四段点分十进制每段都在 0-255 之间。"""
@@ -224,8 +255,67 @@ def _looks_like_ip(candidate: str) -> bool:
     return True
 
 
-def classify_strings(strings: list[str]) -> dict:
-    """把字符串按可疑类型分类，返回各类命中列表。
+def _is_xml_line(s: str) -> bool:
+    """判断是否为 XML / SxS manifest 片段（这类内容是编译产物噪音，不算可疑线索）。"""
+    low = s.lower()
+    if low.lstrip().startswith("<?xml"):
+        return True
+    return any(h in low for h in _XML_HINTS)
+
+
+def _strip_noise(s: str) -> str:
+    """去掉行首最多 2 个对齐/杂字符（反引号、@ 等），保留 '.' 与 '-'。
+
+    strings.exe 扫节区头时常带 1~2 个对齐字节前缀，例如 `` `.text`` / ``@.data``。
+    """
+    out = s.strip()
+    dropped = 0
+    while out and dropped < 2 and not (out[0].isalnum() or out[0] in "._-"):
+        out = out[1:]
+        dropped += 1
+    return out
+
+
+def _as_lower_set(values) -> set[str]:
+    """把任意可迭代对象转成小写字符串集合；非法输入返回空集合，绝不抛异常。"""
+    out: set[str] = set()
+    try:
+        if not values:
+            return out
+        for v in values:
+            if v:
+                out.add(str(v).strip().lower())
+    except TypeError:
+        return out
+    except Exception:
+        return out
+    return out
+
+
+def _looks_like_api(s: str) -> bool:
+    """``known_apis`` 缺失时的启发式判定：纯 CamelCase 标识符 + 常见 WinAPI 前缀。"""
+    if len(s) < 6 or not s.isascii() or not s[0].isalpha():
+        return False
+    ok_chars = all(ch.isalnum() or ch == "_" for ch in s)
+    if not ok_chars:
+        return False
+    if not any(s.startswith(p) for p in _API_PREFIXES):
+        return False
+    # CamelCase：小写/数字后紧跟大写，如 GetProcAddress / RegSetValueW / NtCreateFile
+    return bool(re.search(r"[a-z0-9][A-Z]", s))
+
+
+def classify_strings(strings: list[str] | None = None,
+                     known_apis=None,
+                     known_sections=None) -> dict:
+    """把字符串按可疑类型分类，返回各类命中列表（10 个 key 恒存在）。
+
+    参数
+    ----
+    strings        : 待分类的字符串列表（None / 非列表输入按空处理，绝不抛异常）。
+    known_apis     : 可选，文件导入表/导出表中的真实函数名集合；提供时 API 分类做
+                     精确匹配（不区分大小写），误判率最低。
+    known_sections : 可选，文件真实节区名集合（如 ``.text``）；提供时只认这些名字。
 
     分类优先级（每个字符串仅归入首个匹配类别）：
       urls      : 以 http:// / https:// / ftp:// 开头
@@ -233,17 +323,25 @@ def classify_strings(strings: list[str]) -> dict:
       registry  : 含 HKEY_ 或 HKLM\\ / HKCU\\ / Software\\ 等注册表特征
       paths     : Windows 路径（C:\\...）或 UNC（\\\\...）
       pdb       : 含 .pdb（PDB 调试符号路径，常泄露编译机目录）
+      xml       : XML / SxS manifest 片段（编译产物噪音）
+      sections  : PE 节区名（常带 1~2 个对齐字节前缀）
+      dlls      : 形如 xxx.dll / xxx.exe / xxx.sys 的模块名
+      apis      : 导入表/导出表里的函数名（known_apis 精确匹配，否则启发式）
       others    : 其余
     """
-    cats = {
-        "urls": [],
-        "ips": [],
-        "registry": [],
-        "paths": [],
-        "pdb": [],
-        "others": [],
-    }
-    for s in strings:
+    cats = {key: [] for key in _CLASS_KEYS}
+
+    try:
+        items = list(strings or ())
+    except TypeError:
+        items = []
+
+    apis = _as_lower_set(known_apis)
+    sections = _as_lower_set(known_sections) or set(_DEFAULT_SECTIONS)
+
+    for raw in items:
+        s = raw if isinstance(raw, str) else str(raw)
+        norm = _strip_noise(s)
         if _URL_RE.search(s):
             cats["urls"].append(s)
         elif "version" not in s.lower() and any(_looks_like_ip(c) for c in _IP_RE.findall(s)):
@@ -254,8 +352,16 @@ def classify_strings(strings: list[str]) -> dict:
             cats["paths"].append(s)
         elif _PDB_RE.search(s):
             cats["pdb"].append(s)
+        elif _is_xml_line(s):
+            cats["xml"].append(s)
+        elif norm.lower() in sections:
+            cats["sections"].append(s)
+        elif _DLL_RE.match(norm):
+            cats["dlls"].append(s)
         else:
-            cats["others"].append(s)
+            # 有真实导入/导出函数名就精确匹配，否则退化到启发式
+            is_api = norm.lower() in apis if apis else _looks_like_api(norm)
+            cats["apis" if is_api else "others"].append(s)
     return cats
 
 

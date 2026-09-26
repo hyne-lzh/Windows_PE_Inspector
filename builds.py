@@ -80,6 +80,10 @@ COMMON_ARGS = [
     "--python-flag=no_docstrings",
     "--python-flag=no_site",
     "--python-flag=no_warnings",
+    # tkinterdnd2（文件拖放）自带 tkdnd 二进制，必须显式包含，
+    # 否则打包出的 exe 运行时会报找不到 tkdnd，拖拽直接失效。
+    "--include-package=tkinterdnd2",
+    "--include-package-data=tkinterdnd2",
     "--noinclude-setuptools-mode=nofollow",
     f"--output-filename={OUTPUT_NAME}",
 ]

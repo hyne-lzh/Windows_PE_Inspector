@@ -540,11 +540,6 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
 
     risky_imports = _scan_risky_imports(imports)
 
-    # 字符串提取：strings.exe（外部工具）+ pefile（兜底）双重来源
-    strings_summary = extract_strings(str(p), min_length=5)
-    merged_strings = strings_summary.get("merged", [])
-    string_classes = classify_strings(merged_strings)
-
     exports: list[ExportSymbol] = []
     exp = getattr(pe, "DIRECTORY_ENTRY_EXPORT", None)
     if exp and exp.symbols:
@@ -557,6 +552,17 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
                     forwarder=sym.forwarder.decode("utf-8", errors="replace") if sym.forwarder else None,
                 )
             )
+
+    # 字符串提取：strings.exe（外部工具）+ pefile（兜底）双重来源。
+    # 分类时传入真实导入/导出函数名与节区名，让 API / DLL / 节区名噪音准确归桶。
+    strings_summary = extract_strings(str(p), min_length=5)
+    merged_strings = strings_summary.get("merged", [])
+    known_apis = {s.display for d in imports for s in d.symbols}
+    known_apis |= {e.name for e in exports if e.name}
+    known_sections = {s.name for s in sections}
+    string_classes = classify_strings(
+        merged_strings, known_apis=known_apis, known_sections=known_sections
+    )
 
     warnings: list[str] = []
     if p.stat().st_size > 200 * 1024 * 1024:

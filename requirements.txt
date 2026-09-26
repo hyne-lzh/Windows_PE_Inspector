@@ -6,6 +6,10 @@
 pefile==2024.8.26
 customtkinter==6.0.0
 
+# GUI 文件拖放（tkinter 原生不支持，必须显式安装；带 tkdnd 二进制，
+# 打包时需在 Nuitka 参数里显式包含，见 builds.py）
+tkinterdnd2==0.6.3
+
 # customtkinter 的间接依赖（pip 会自动安装，此处显式列出以便追溯）
 # darkdetect==0.8.0
 # packaging==26.3
