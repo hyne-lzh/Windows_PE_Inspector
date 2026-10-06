@@ -122,6 +122,7 @@ Windows_PE_Inspector/
 ├── md/
 │   └── nuitka_install.md  # Nuitka 编译指南
 ├── requirements.txt       # 依赖清单（pefile + customtkinter + openpyxl，精确锁版本）
+├── LICENSE.txt            # MIT 许可证全文
 ├── .gitignore
 └── README.md
 ```
@@ -193,6 +194,8 @@ python builds.py               # 全自动编译（自动测速、择优编译�
 - **浏览即解析**：`_browse()` 选完文件后自动触发分析，与拖入行为一致；「开始分析」按钮保留作为手动重跑入口
 - **CRL/OCSP 截断 URL 修复**：字符串分类器 URL 检测由「`^https?://` 严格锚定」改为三层（剥噪音 + 跳 1 字节 + 全文检索），吸收 CRL/OCSP 字符串常见的 `s` / `V` / `a` / `3` / `X` 等 1 字节行首噪音
 - **README 与 nuitka_install.md 去重合并**：把 README 的「## 编译为 exe」整段（87 行重复说明）全部合并进 [`md/nuitka_install.md`](md/nuitka_install.md)，README 仅保留速查两条命令 + 指针，避免两处维护
+- **新增 `LICENSE.txt`**：MIT 许可证全文落地（此前只在 README 里口头声明「采用 MIT」，仓库内无正式许可文件）；README 许可章节与目录结构同步指向该文件
+- **Nuitka 实编验证跑通**：`main.dist/PEInspector.exe`（20.9 MB，总目录 46 MB / 1062 文件），启动 6 秒进程存活无闪退、无异常日志；外置数据全部进包（`assets/`、`strings.exe`）
 
 ### 2026-09-26
 
@@ -238,7 +241,9 @@ python builds.py               # 全自动编译（自动测速、择优编译�
 
 ## 许可
 
-本项目采用 MIT 许可证。
+本项目采用 **MIT 许可证**，全文见 [`LICENSE.txt`](LICENSE.txt)。
+
+Copyright (c) 2026 hyne-lzh
 
 ## 作者
 
