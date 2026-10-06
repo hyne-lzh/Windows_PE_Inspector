@@ -26,7 +26,7 @@ from typing import NamedTuple
 import customtkinter as ctk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
-from achieve.pe_parser import PeParseError, human_size, parse_pe
+from achieve.pe_parser import PeParseError, human_size, parse_pe, zh_pair
 from achieve.report_exporter import export_report
 
 # --------------------------------------------------------------------------
@@ -641,8 +641,9 @@ class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
         rows = [
             ("文件", report.path),
             ("大小", human_size(report.file_size)),
-            ("格式", f"{report.kind}　架构 {report.machine_name}"),
-            ("子系统", report.subsystem_name),
+            ("格式", report.kind),
+            ("架构", zh_pair(report.machine_name, report.machine_zh)),
+            ("子系统", zh_pair(report.subsystem_name, report.subsystem_zh)),
             ("编译时间", report.compile_time_text),
             ("入口点 RVA", f"0x{report.entry_point_rva:08X}"),
             ("镜像基址", f"0x{report.image_base:016X}"),

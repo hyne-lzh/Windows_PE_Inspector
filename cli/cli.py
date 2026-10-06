@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from achieve.pe_parser import ENTROPY_WARN, PeParseError, human_size, parse_pe
+from achieve.pe_parser import ENTROPY_WARN, PeParseError, human_size, parse_pe, zh_pair
 from achieve.report_exporter import export_report
 
 # 中文输出在 GBK 控制台下容易报 UnicodeEncodeError，统一切到 UTF-8。
@@ -36,8 +36,9 @@ def show_header(r) -> None:
     rule("基本信息")
     print(f"文件       : {r.path}")
     print(f"大小       : {human_size(r.file_size)}")
-    print(f"格式       : {r.kind}    架构: {r.machine_name}")
-    print(f"子系统     : {r.subsystem_name}")
+    print(f"格式       : {r.kind}")
+    print(f"架构       : {zh_pair(r.machine_name, r.machine_zh)}")
+    print(f"子系统     : {zh_pair(r.subsystem_name, r.subsystem_zh)}")
     print(f"编译时间   : {r.compile_time_text}")
     print(f"入口点 RVA : 0x{r.entry_point_rva:08X}")
     print(f"镜像基址   : 0x{r.image_base:016X}")

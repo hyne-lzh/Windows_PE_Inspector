@@ -37,15 +37,129 @@ SECTION_FLAGS = (
     (0x80000000, "W"),
 )
 
-# 节区权限缩写 → 中文含义
-PERMISSION_TRANSLATIONS = {
-    "CODE": "代码",
-    "IDATA": "已初始化数据",
-    "UDATA": "未初始化数据",
-    "X": "可执行",
-    "R": "可读",
-    "W": "可写",
+# 通用翻译表（PE 各分类的英文标识 → 中文说明）
+# --------------------------------------------------------------------------
+# 与节区权限翻译一样,所有需要本地化的英文键都集中在一处。新增分类只需往
+# _BUILTIN_TRANSLATIONS 加一个键,然后调用 translate("分类", key) 即可。
+# --------------------------------------------------------------------------
+_BUILTIN_TRANSLATIONS: dict[str, dict[str, str]] = {
+    "SECTION_FLAGS": {
+        "CODE": "代码",
+        "IDATA": "已初始化数据",
+        "UDATA": "未初始化数据",
+        "X": "可执行",
+        "R": "可读",
+        "W": "可写",
+    },
+    "MACHINE": {
+        "IMAGE_FILE_MACHINE_AMD64": "x64 64 位",
+        "IMAGE_FILE_MACHINE_I386": "x86 32 位",
+        "IMAGE_FILE_MACHINE_IA64": "IA64 安腾",
+        "IMAGE_FILE_MACHINE_ARM": "ARM 32 位",
+        "IMAGE_FILE_MACHINE_ARM64": "ARM64 64 位",
+        "IMAGE_FILE_MACHINE_ARMNT": "ARM Thumb-2",
+        "IMAGE_FILE_MACHINE_THUMB": "ARM Thumb",
+        "IMAGE_FILE_MACHINE_ALPHA": "Alpha",
+        "IMAGE_FILE_MACHINE_MIPS16": "MIPS 16 位",
+        "IMAGE_FILE_MACHINE_SH3": "SuperH 32 位",
+        "IMAGE_FILE_MACHINE_SH3E": "SuperH 32 位增强",
+        "IMAGE_FILE_MACHINE_SH4": "SuperH 64 位",
+        "IMAGE_FILE_MACHINE_SH5": "SuperH 64 位增强",
+        "IMAGE_FILE_MACHINE_RISCV32": "RISC-V 32 位",
+        "IMAGE_FILE_MACHINE_RISCV64": "RISC-V 64 位",
+        "IMAGE_FILE_MACHINE_RISCV128": "RISC-V 128 位",
+        "IMAGE_FILE_MACHINE_LOONGARCH32": "龙芯 LoongArch 32 位",
+        "IMAGE_FILE_MACHINE_LOONGARCH64": "龙芯 LoongArch 64 位",
+        "IMAGE_FILE_MACHINE_UNKNOWN": "未知架构",
+    },
+    "SUBSYSTEM": {
+        "IMAGE_SUBSYSTEM_UNKNOWN": "未知子系统",
+        "IMAGE_SUBSYSTEM_NATIVE": "原生内核驱动",
+        "IMAGE_SUBSYSTEM_WINDOWS_GUI": "Windows 图形界面程序",
+        "IMAGE_SUBSYSTEM_WINDOWS_CUI": "Windows 控制台程序",
+        "IMAGE_SUBSYSTEM_OS2_CUI": "OS/2 控制台程序",
+        "IMAGE_SUBSYSTEM_POSIX_CUI": "POSIX 控制台程序",
+        "IMAGE_SUBSYSTEM_NATIVE_WINDOWS": "原生 Windows",
+        "IMAGE_SUBSYSTEM_WINDOWS_CE_GUI": "Windows CE 图形界面",
+        "IMAGE_SUBSYSTEM_EFI_APPLICATION": "EFI 应用程序",
+        "IMAGE_SUBSYSTEM_EFI_BOOT_SERVICE_DRIVER": "EFI 引导服务驱动",
+        "IMAGE_SUBSYSTEM_EFI_RUNTIME_DRIVER": "EFI 运行时驱动",
+        "IMAGE_SUBSYSTEM_EFI_ROM": "EFI ROM 映像",
+        "IMAGE_SUBSYSTEM_XBOX": "Xbox 游戏机",
+        "IMAGE_SUBSYSTEM_WINDOWS_BOOT_APPLICATION": "Windows 引导应用程序",
+    },
+    # 预留分类占位（未来按需启用,DLL 名/导入表特征名/告警级别等都可挂在这里）
+    "DLL": {},
 }
+
+# 外置翻译文件路径（项目根 assets/ 下,用户可自行编辑扩充,无需改代码）
+TRANSLATIONS_PATH = Path(__file__).resolve().parent.parent / "assets" / "translations.json"
+
+
+def _load_translations() -> dict[str, dict[str, str]]:
+    """从 assets/translations.json 合并到内置翻译表。
+
+    外置的目的：让用户能自行编辑/扩充词条,不必改动 Python 代码。
+    加载失败(文件缺失、格式错误)时回退到内置条目,保证功能不残废。
+    合并策略：内置为底,外置按分类覆盖;外置分类里只接受 {str: str}。
+    """
+    merged: dict[str, dict[str, str]] = {k: dict(v) for k, v in _BUILTIN_TRANSLATIONS.items()}
+    try:
+        with TRANSLATIONS_PATH.open(encoding="utf-8") as fh:
+            raw = json.load(fh)
+        if not isinstance(raw, dict):
+            return merged
+        for cat, items in raw.items():
+            if not isinstance(items, dict):
+                continue
+            bucket = merged.setdefault(cat, {})
+            for k, v in items.items():
+                if isinstance(v, str):
+                    bucket[str(k)] = v
+    except Exception:  # noqa: BLE001
+        pass
+    return merged
+
+
+# 全局翻译表(模块加载时一次性载入)
+TRANSLATIONS: dict[str, dict[str, str]] = _load_translations()
+
+
+def translate(category: str, key: str, default: str = "") -> str:
+    """通用翻译查找:translate("分类", "键", default="缺省值")。
+
+    - 分类键不存在 → 返回 default(默认空串)
+    - 键不存在 → 返回 default
+    - 命中 → 返回中文
+    """
+    if not category or not key:
+        return default
+    bucket = TRANSLATIONS.get(category)
+    if not bucket:
+        return default
+    return bucket.get(key, default)
+
+
+def translate_pair(category: str, key: str) -> str:
+    """通用「英文（中文）」拼接。命中且有 zh 才走 zh_pair 风格，否则只回 key。
+
+    与之前 zh_pair(英文, 中文) 用法等价，但只要给「分类+键」就能直接拿到字符串。
+    """
+    if not key:
+        return ""
+    zh = translate(category, key)
+    return f"{key}（{zh}）" if zh else key
+
+
+def zh_pair(english: str, chinese: str) -> str:
+    """把英文标识与中文说明拼成「英文（中文）」；没有中文时只返回英文。
+
+    保留该函数仅为向后兼容（老代码/report_exporter 用鸭子类型调用），
+    新代码请直接用 translate_pair("分类", key)。
+    """
+    english = english or ""
+    chinese = chinese or ""
+    return f"{english}（{chinese}）" if chinese else english
 
 
 class PeParseError(Exception):
@@ -112,8 +226,10 @@ class PeReport:
     bits: int
     machine: int
     machine_name: str
+    machine_zh: str              # 架构中文说明，如 "x64 64 位"（未收录则空串）
     subsystem: int
     subsystem_name: str
+    subsystem_zh: str            # 子系统中文说明，如 "Windows 图形界面程序"
     time_date_stamp: int
     compile_time_text: str
     time_in_future: bool
@@ -178,19 +294,22 @@ def section_perms(ch: int) -> str:
 def perms_to_zh(perms: str) -> str:
     """把权限缩写翻译为中文含义，例如 "CODEXR" → "代码·可执行·可读"。
 
-    按最长优先匹配多字符代码（UDATA 5 字符 > IDATA 5 字符 > CODE 4 字符 > X/R/W 1 字符）。
+    按最长优先匹配多字符代码（UDATA 5 > IDATA 5 > CODE 4 > X/R/W 1）。
+    翻译本身走通用 translate("SECTION_FLAGS", code),新增缩写只需往
+    _BUILTIN_TRANSLATIONS["SECTION_FLAGS"] 加条目。
     """
     if not perms or perms == "-":
         return "-"
     # 按字符长度从长到短排序（UDATA/IDATA 5 > CODE 4 > X/R/W 1），保证贪婪匹配
-    codes_by_len = sorted(PERMISSION_TRANSLATIONS.keys(), key=len, reverse=True)
+    bucket = TRANSLATIONS.get("SECTION_FLAGS", {})
+    codes_by_len = sorted(bucket.keys(), key=len, reverse=True)
     parts: list[str] = []
     remaining = perms
     while remaining:
         matched = False
         for code in codes_by_len:
             if remaining.startswith(code):
-                parts.append(PERMISSION_TRANSLATIONS[code])
+                parts.append(bucket[code])
                 remaining = remaining[len(code):]
                 matched = True
                 break
@@ -576,8 +695,10 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
         bits=bits,
         machine=int(fh.Machine),
         machine_name=str(pefile.MACHINE_TYPE.get(fh.Machine, hex(fh.Machine))),
+        machine_zh=translate("MACHINE", str(pefile.MACHINE_TYPE.get(fh.Machine, ""))),
         subsystem=int(oh.Subsystem),
         subsystem_name=str(pefile.SUBSYSTEM_TYPE.get(oh.Subsystem, str(oh.Subsystem))),
+        subsystem_zh=translate("SUBSYSTEM", str(pefile.SUBSYSTEM_TYPE.get(oh.Subsystem, ""))),
         time_date_stamp=stamp,
         compile_time_text=fmt_time(stamp),
         time_in_future=_is_future(stamp),

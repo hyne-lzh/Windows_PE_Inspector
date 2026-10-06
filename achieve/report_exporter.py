@@ -80,6 +80,17 @@ def _esc(value: Any) -> str:
     return html.escape(str(value), quote=True)
 
 
+def _zh_pair(english: Any, chinese: Any) -> str:
+    """拼成「英文（中文）」；无中文时只返回英文。
+
+    本地实现而非 import pe_parser.zh_pair，保持本模块的 duck typing 解耦
+    （调用方传入任何含同名字段的对象都能工作）。
+    """
+    en = str(english or "")
+    zh = str(chinese or "")
+    return f"{en}（{zh}）" if zh else en
+
+
 # HTML 报告里字符串区块最多渲染的条数（超出部分省略提示）
 MAX_HTML_STRING_ITEMS = 2000
 
@@ -128,8 +139,8 @@ def _basic_rows(report: Any) -> list[tuple[str, str]]:
         ("文件大小", _human_size(_g(report, "file_size", 0))),
         ("格式", _g(report, "kind", "")),
         ("位数", f"{_g(report, 'bits', '')} 位"),
-        ("架构", _g(report, "machine_name", "")),
-        ("子系统", _g(report, "subsystem_name", "")),
+        ("架构", _zh_pair(_g(report, "machine_name", ""), _g(report, "machine_zh", ""))),
+        ("子系统", _zh_pair(_g(report, "subsystem_name", ""), _g(report, "subsystem_zh", ""))),
         ("编译时间", _g(report, "compile_time_text", "(未设置)")),
         ("入口点 RVA", _hex(_g(report, "entry_point_rva", 0), 8)),
         ("镜像基址", _hex(_g(report, "image_base", 0), 16)),
