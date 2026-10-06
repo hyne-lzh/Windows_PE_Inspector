@@ -318,7 +318,7 @@ def classify_strings(strings: list[str] | None = None,
     known_sections : 可选，文件真实节区名集合（如 ``.text``）；提供时只认这些名字。
 
     分类优先级（每个字符串仅归入首个匹配类别）：
-      urls      : 以 http:// / https:// / ftp:// 开头
+      urls      : 以 http:// / https:// / ftp:// 开头（容许 1 字节行首噪音，适配 CRL/OCSP 截断）
       ips       : IPv4 点分十进制
       registry  : 含 HKEY_ 或 HKLM\\ / HKCU\\ / Software\\ 等注册表特征
       paths     : Windows 路径（C:\\...）或 UNC（\\\\...）
@@ -342,7 +342,12 @@ def classify_strings(strings: list[str] | None = None,
     for raw in items:
         s = raw if isinstance(raw, str) else str(raw)
         norm = _strip_noise(s)
-        if _URL_RE.search(s):
+        # URL 检测：strings.exe 扫节区时常带 1 字节字母/数字行首噪音
+        # （如 CRL/OCSP 截断里的 `s`、`V`、`3`、`_`、`#`），_strip_noise 不剥字母数字，
+        # 这里额外允许从 norm 头部跳过一个字符再匹配；同时保留对原文的全文检索兜底
+        # （异常截断位置时仍有 http:// 在字符串中部）。
+        tail = norm[1:] if norm else ""
+        if _URL_RE.match(norm) or _URL_RE.match(tail) or _URL_RE.search(s):
             cats["urls"].append(s)
         elif "version" not in s.lower() and any(_looks_like_ip(c) for c in _IP_RE.findall(s)):
             cats["ips"].append(s)

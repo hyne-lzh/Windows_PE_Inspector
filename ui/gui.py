@@ -367,12 +367,14 @@ class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
     # ------------------------------------------------------------ 交互动作
 
     def _browse(self) -> None:
+        """弹出文件选择对话框；选中后填入路径并立刻触发解析（与拖入行为一致）。"""
         path = filedialog.askopenfilename(
             title="选择 PE 文件",
             filetypes=[("PE 文件", "*.exe;*.dll;*.sys"), ("所有文件", "*.*")],
         )
         if path:
             self.path_var.set(path)
+            self._on_analyze()
 
     def _on_export(self) -> None:
         """把当前报告导出为 HTML / Excel（按保存对话框的扩展名自动判断格式）。"""
