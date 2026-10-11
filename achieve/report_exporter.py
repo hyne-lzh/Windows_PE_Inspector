@@ -1,12 +1,12 @@
 """报告导出模块：将已解析好的 PeReport 导出为 HTML 或 Excel。
 
-本模块**不依赖** pe_parser（不 import 它），只通过 duck typing / getattr
-防御性地读取传入的 report 对象，便于 PeReport 在未来新增字段（如 strings）
-时保持兼容。
+本模块**只通过 duck typing / getattr 防御性读取**传入的 report 对象，不依赖其
+具体类型（便于 PeReport 未来新增字段时保持兼容）。外部依赖仅两处：
+``achieve.i18n``（界面文案）与 ``achieve.pe_parser.translate``（风险分类翻译）。
 
-- export_html(report, out_path)  -> 自包含单文件 HTML（CSS 内联）
-- export_excel(report, out_path) -> openpyxl 多工作表 xlsx
-- export_report(report, out_path, fmt) -> 统一入口，按 fmt 或扩展名分派
+- export_html(report, out_path, lang=None)  -> 自包含单文件 HTML（CSS 内联）
+- export_excel(report, out_path, lang=None) -> openpyxl 多工作表 xlsx
+- export_report(report, out_path, fmt, lang) -> 统一入口，按 fmt 或扩展名分派
 
 工程约束：
 - 只用标准库 + openpyxl；HTML 手写，无模板引擎、无外部资源
@@ -14,15 +14,18 @@
 - 路径用 pathlib.Path 处理
 - 文件写入失败抛中文异常（调用方处理）
 - 不调用 exit()（用 sys.exit），不写 assert（编译期会被剥离）
+- 中英双语：所有文案经 i18n.t(key, lang=...)，lang 缺省取当前语言
 """
 
 from __future__ import annotations
 
 import datetime
 import html
-import sys
 from pathlib import Path
 from typing import Any
+
+from .i18n import get_language, t
+from .pe_parser import translate
 
 __all__ = ["export_html", "export_excel", "export_report"]
 
@@ -35,10 +38,35 @@ RISK_COLORS = {
 RISK_COLOR_DEFAULT = "#34495e"
 RISK_LEVELS = ("严重", "中等", "低")
 
+# 签名状态 -> i18n key
+_SIG_KEYS = {
+    "valid": "signature.valid",
+    "invalid": "signature.invalid",
+    "unknown": "signature.unknown",
+    "none": "signature.none",
+}
+
 
 # --------------------------------------------------------------------------
-# 防御性读取 & 通用工具
+# 翻译 & 防御性读取 & 通用工具
 # --------------------------------------------------------------------------
+
+def _t(key: str, lang: str, **fmt) -> str:
+    """统一文案入口（带指定语言）。"""
+    return t(key, lang=lang, **fmt)
+
+
+def _level_text(level: Any, lang: str) -> str:
+    """风险等级数据值（中文）→ 展示文本。"""
+    lv = str(level or "")
+    return t(f"risk.{lv}", default=lv, lang=lang)
+
+
+def _category_text(cat: Any, lang: str) -> str:
+    """风险分类数据值（中文）→ 展示文本。"""
+    c = str(cat or "")
+    return translate("RISK_CATEGORY", c, default=c, lang=lang)
+
 
 def _g(obj: Any, name: str, default: Any = None) -> Any:
     """安全取值：report 或其子对象未定义某字段时回退到 default。"""
@@ -58,7 +86,9 @@ def _human_size(n: Any) -> str:
         return f"{n} B"
     if n < 1024 * 1024:
         return f"{n / 1024:.1f} KB"
-    return f"{n / 1024 / 1024:.1f} MB"
+    if n < 1024 * 1024 * 1024:
+        return f"{n / 1024 / 1024:.1f} MB"
+    return f"{n / 1024 / 1024 / 1024:.2f} GB"
 
 
 def _hex(value: Any, width: int = 8) -> str:
@@ -81,11 +111,7 @@ def _esc(value: Any) -> str:
 
 
 def _zh_pair(english: Any, chinese: Any) -> str:
-    """拼成「英文（中文）」；无中文时只返回英文。
-
-    本地实现而非 import pe_parser.zh_pair，保持本模块的 duck typing 解耦
-    （调用方传入任何含同名字段的对象都能工作）。
-    """
+    """拼成「英文（中文）」；无中文时只返回英文（保留用于兼容）。"""
     en = str(english or "")
     zh = str(chinese or "")
     return f"{en}（{zh}）" if zh else en
@@ -94,19 +120,16 @@ def _zh_pair(english: Any, chinese: Any) -> str:
 # HTML 报告里字符串区块最多渲染的条数（超出部分省略提示）
 MAX_HTML_STRING_ITEMS = 2000
 
-# Excel 公式注入防护：openpyxl 会把以这些前缀开头的字符串标记为公式，
-# 而 DLL 名 / 函数名 / 节名都来自被分析的（可能是恶意的）样本，攻击者可构造
-# 以 "=" 开头的名字，让分析员打开 xlsx 时触发公式执行或外链请求。
-_EXCEL_FORMULA_PREFIXES = ("=", "+", "-", "@")
-
-
+# Excel 公式注入防护：openpyxl 仅把以 "=" 开头的字符串判定为公式。
+# DLL 名 / 函数名 / 节名来自被分析的（可能是恶意的）样本，攻击者可构造以
+# "=" 开头的名字，让分析员打开 xlsx 时触发公式执行或外链请求。
 def _excel_safe(value: Any) -> Any:
     """把不可信文本中和为 Excel 安全值（非字符串原样返回）。"""
     if not isinstance(value, str):
         return value
     # 去掉 NUL 与控制字符（Excel 不接受，且可能用于绕过）
     cleaned = value.replace("\x00", "")
-    if cleaned.startswith(_EXCEL_FORMULA_PREFIXES):
+    if cleaned.startswith("="):
         return "'" + cleaned
     return cleaned
 
@@ -129,26 +152,33 @@ def _iter_attr(seq: Any, name: str):
 
 
 # --------------------------------------------------------------------------
-# 数据提取（统一从 report 读取，供 HTML / Excel 共用）
+# 派生展示文本
 # --------------------------------------------------------------------------
 
-def _basic_rows(report: Any) -> list[tuple[str, str]]:
-    """基本信息：两列（项目 / 值）。"""
-    rows = [
-        ("文件路径", _g(report, "path", "")),
-        ("文件大小", _human_size(_g(report, "file_size", 0))),
-        ("格式", _g(report, "kind", "")),
-        ("位数", f"{_g(report, 'bits', '')} 位"),
-        ("架构", _zh_pair(_g(report, "machine_name", ""), _g(report, "machine_zh", ""))),
-        ("子系统", _zh_pair(_g(report, "subsystem_name", ""), _g(report, "subsystem_zh", ""))),
-        ("编译时间", _g(report, "compile_time_text", "(未设置)")),
-        ("入口点 RVA", _hex(_g(report, "entry_point_rva", 0), 8)),
-        ("镜像基址", _hex(_g(report, "image_base", 0), 16)),
-        ("节区数量", str(_g(report, "num_sections", ""))),
-        ("数据目录", f"{_g(report, 'num_data_directories', '')} 项"),
-        ("校验和", _hex(_g(report, "checksum", 0), 8)),
-    ]
-    return [(k, _esc(v)) for k, v in rows]
+def _signature_text(report: Any, lang: str) -> str:
+    """数字签名的单行摘要。"""
+    sig = _g(report, "signature", None)
+    if not sig or not _g(sig, "present", False):
+        return _t("signature.none", lang)
+    status = str(_g(sig, "status", "unknown"))
+    text = _t(_SIG_KEYS.get(status, "signature.unknown"), lang)
+    signer = _g(sig, "signer", "") or ""
+    if signer:
+        text += f" · {_t('signature.signer', lang)}: {signer}"
+    detail = _g(sig, "detail", "") or ""
+    if detail and status == "invalid":
+        text += f" ({detail})"
+    return text
+
+
+def _packer_evidence(hit: Any, lang: str) -> str:
+    """把某打包器命中的证据拼成一行文本。"""
+    parts: list[str] = []
+    for name in _g(hit, "sections", []) or []:
+        parts.append(_t("packer.evidence_section", lang, name=name))
+    for text in _g(hit, "strings", []) or []:
+        parts.append(_t("packer.evidence_string", lang, text=text))
+    return "; ".join(parts)
 
 
 def _get_sections(report: Any) -> list:
@@ -167,6 +197,10 @@ def _get_risky(report: Any) -> list:
     return _g(report, "risky_imports", []) or []
 
 
+def _get_packers(report: Any) -> list:
+    return _g(report, "packers", []) or []
+
+
 def _risk_stat(risky: list) -> dict:
     stat = {lv: 0 for lv in RISK_LEVELS}
     for x in risky:
@@ -176,24 +210,75 @@ def _risk_stat(risky: list) -> dict:
     return stat
 
 
+def _basic_rows(report: Any, lang: str) -> list[tuple[str, str]]:
+    """基本信息：两列（项目 / 值）。返回**未转义**的原始值，转义由渲染方负责。"""
+    rows = [
+        (_t("info.file", lang), str(_g(report, "path", "") or "")),
+        (_t("info.size", lang), _human_size(_g(report, "file_size", 0))),
+        (_t("info.format", lang), str(_g(report, "kind", "") or "")),
+        (_t("info.bits", lang), _t("info.unit_bits", lang, n=_g(report, "bits", ""))),
+        (_t("info.machine", lang), _zh_pair(_g(report, "machine_name", ""), _g(report, "machine_zh", ""))),
+        (_t("info.subsystem", lang), _zh_pair(_g(report, "subsystem_name", ""), _g(report, "subsystem_zh", ""))),
+        (_t("info.compile_time", lang), str(_g(report, "compile_time_text", "") or "")),
+        (_t("info.entry_point", lang), _hex(_g(report, "entry_point_rva", 0), 8)),
+        (_t("info.image_base", lang), _hex(_g(report, "image_base", 0), 16)),
+        (_t("info.sections_count", lang), str(_g(report, "num_sections", ""))),
+        (_t("info.checksum", lang), _hex(_g(report, "checksum", 0), 8)),
+        (_t("info.data_dirs", lang), _t("info.unit_items", lang, n=_g(report, "num_data_directories", ""))),
+        (_t("signature.title", lang), _signature_text(report, lang)),
+    ]
+    packers = _get_packers(report)
+    rows.append((_t("packer.title", lang),
+                 ", ".join(str(_g(p, "name", "")) for p in packers) if packers else _t("packer.none", lang)))
+    return rows
+
+
 # ==========================================================================
 # HTML 导出
 # ==========================================================================
 
-def _html_section_table(sections: list) -> str:
+def _html_basic_table(report: Any, lang: str) -> str:
+    head = f"<tr><th>{_esc(_t('info.file', lang))}</th><th>{_esc(_t('report.basic_title', lang))}</th></tr>"
+    body = "".join(
+        f"<tr><td class='k'>{_esc(k)}</td><td>{_esc(v)}</td></tr>"
+        for k, v in _basic_rows(report, lang)
+    )
+    return f'<table class="data">{head}{body}</table>'
+
+
+def _html_packer_table(report: Any, lang: str) -> str:
+    packers = _get_packers(report)
+    if not packers:
+        return f'<p class="empty">{_esc(_t("packer.none", lang))}</p>'
+    head = (f"<tr><th>{_esc(_t('packer.col_packer', lang))}</th>"
+            f"<th>{_esc(_t('packer.col_evidence', lang))}</th></tr>")
+    body = "".join(
+        f"<tr><td><b>{_esc(_g(p, 'name', ''))}</b></td>"
+        f"<td>{_esc(_packer_evidence(p, lang))}</td></tr>"
+        for p in packers
+    )
+    return f'<table class="data">{head}{body}</table>'
+
+
+def _html_section_table(sections: list, lang: str) -> str:
     if not sections:
-        return '<p class="empty">（无节区信息）</p>'
+        return f'<p class="empty">{_esc(_t("report.empty_sections", lang))}</p>'
     head = (
         "<tr>"
-        "<th>名称</th><th>虚拟大小</th><th>原始大小</th>"
-        "<th>熵值</th><th>权限</th><th>中文含义</th><th>标记</th>"
+        f"<th>{_esc(_t('sections.col_name', lang))}</th>"
+        f"<th>{_esc(_t('sections.col_vsize', lang))}</th>"
+        f"<th>{_esc(_t('sections.col_rsize', lang))}</th>"
+        f"<th>{_esc(_t('sections.col_entropy', lang))}</th>"
+        f"<th>{_esc(_t('sections.col_perms', lang))}</th>"
+        f"<th>{_esc(_t('sections.col_meaning', lang))}</th>"
+        f"<th>{_esc(_t('sections.col_flag', lang))}</th>"
         "</tr>"
     )
     body = []
     for s in sections:
         suspicious = bool(_g(s, "is_suspicious", False))
         row_cls = ' class="suspicious"' if suspicious else ""
-        mark = "⚠ 高熵·疑似加壳/加密" if suspicious else "正常"
+        mark = _t("report.pos_suspicious", lang) if suspicious else _t("report.pos_normal", lang)
         entropy = _g(s, "entropy", 0.0)
         try:
             entropy_text = f"{float(entropy):.3f}"
@@ -207,40 +292,45 @@ def _html_section_table(sections: list) -> str:
             f"<td>{entropy_text}</td>"
             f"<td>{_esc(_g(s, 'perms', ''))}</td>"
             f"<td>{_esc(_g(s, 'perms_zh', ''))}</td>"
-            f"<td class='{'warn' if suspicious else 'ok'}'>{mark}</td>"
+            f"<td class='{'warn' if suspicious else 'ok'}'>{_esc(mark)}</td>"
             "</tr>"
         )
     return f'<table class="data">{head}{"".join(body)}</table>'
 
 
-def _html_imports(imports: list) -> str:
+def _html_imports(imports: list, lang: str) -> str:
     if not imports:
-        return '<p class="empty">（无导入表）</p>'
+        return f'<p class="empty">{_esc(_t("common.no_imports", lang))}</p>'
     out = []
     total = 0
     for dll in imports:
         symbols = _g(dll, "symbols", []) or []
         total += len(symbols)
+        meaning = _g(dll, "meaning", "") or ""
+        meaning_html = (f' <span class="count">— {_esc(meaning)}</span>') if meaning else ""
         out.append(
             f'<div class="dll"><span class="dllname">{_esc(_g(dll, "dll", ""))}</span>'
-            f' <span class="count">{len(symbols)} 个函数</span></div>'
+            f' <span class="count">({len(symbols)})</span>{meaning_html}</div>'
         )
         if symbols:
             items = "".join(
-                f"<li>{_esc(_g(sym, 'display', '(未知)'))}</li>" for sym in symbols
+                f"<li>{_esc(_g(sym, 'display', '(?)'))}</li>" for sym in symbols
             )
             out.append(f'<ul class="syms">{items}</ul>')
-    out.append(f'<p class="total">合计：{len(imports)} 个 DLL，{total} 个函数</p>')
+    out.append(f'<p class="total">{_esc(_t("report.imports_total", lang, ndll=len(imports), nfun=total))}</p>')
     return "\n".join(out)
 
 
-def _html_exports(exports: list) -> str:
+def _html_exports(exports: list, lang: str) -> str:
     if not exports:
-        return '<p class="empty">（无导出表，通常说明这是可执行程序而非 DLL）</p>'
-    head = "<tr><th>序号</th><th>RVA</th><th>名称</th><th>转发目标</th></tr>"
+        return f'<p class="empty">{_esc(_t("common.no_exports", lang))}</p>'
+    head = (f"<tr><th>{_esc(_t('exports.col_ordinal', lang))}</th>"
+            f"<th>{_esc(_t('exports.col_rva', lang))}</th>"
+            f"<th>{_esc(_t('exports.col_name', lang))}</th>"
+            f"<th>{_esc(_t('exports.col_forward', lang))}</th></tr>")
     body = []
     for e in exports:
-        name = _g(e, "name") or "(仅序号)"
+        name = _g(e, "name") or _t("exports.ordinal_only", lang)
         forward = _g(e, "forwarder") or "—"
         body.append(
             "<tr>"
@@ -252,44 +342,42 @@ def _html_exports(exports: list) -> str:
         )
     return (
         f'<table class="data">{head}{"".join(body)}</table>'
-        f'<p class="total">合计：{len(exports)} 个导出符号</p>'
+        f'<p class="total">{_esc(_t("report.exports_total", lang, n=len(exports)))}</p>'
     )
 
 
-def _html_risky(risky: list) -> str:
+def _html_risky(risky: list, lang: str) -> str:
     if not risky:
-        return '<p class="empty ok-text">[ok] 未匹配到高危 API</p>'
-    head = "<tr><th>等级</th><th>分类</th><th>DLL</th><th>函数</th><th>说明</th></tr>"
+        return f'<p class="empty ok-text">{_esc(_t("common.no_risky", lang))}</p>'
+    head = (f"<tr><th>{_esc(_t('risks.col_risk', lang))}</th>"
+            f"<th>{_esc(_t('risks.col_category', lang))}</th>"
+            f"<th>{_esc(_t('risks.col_dll', lang))}</th>"
+            f"<th>{_esc(_t('risks.col_function', lang))}</th>"
+            f"<th>{_esc(_t('risks.col_desc', lang))}</th></tr>")
     body = []
     for x in risky:
         lv = _g(x, "risk_level", "")
         color = RISK_COLORS.get(lv, RISK_COLOR_DEFAULT)
         body.append(
             "<tr>"
-            f'<td style="color:{color};font-weight:bold">{_esc(lv)}</td>'
-            f"<td>{_esc(_g(x, 'category', ''))}</td>"
+            f'<td style="color:{color};font-weight:bold">{_esc(_level_text(lv, lang))}</td>'
+            f"<td>{_esc(_category_text(_g(x, 'category', ''), lang))}</td>"
             f"<td>{_esc(_g(x, 'dll', ''))}</td>"
             f"<td>{_esc(_g(x, 'function', ''))}</td>"
             f"<td>{_esc(_g(x, 'description', ''))}</td>"
             "</tr>"
         )
     stat = _risk_stat(risky)
-    summary = (
-        f"合计 {len(risky)} 个　严重 {stat['严重']}　"
-        f"中等 {stat['中等']}　低 {stat['低']}"
-    )
+    summary = _t("report.risks_total", lang, n=len(risky),
+                 crit=stat["严重"], med=stat["中等"], low=stat["低"])
     return (
         f'<table class="data">{head}{"".join(body)}</table>'
-        f'<p class="total">{summary}</p>'
+        f'<p class="total">{_esc(summary)}</p>'
     )
 
 
-def _html_strings(report: Any) -> str | None:
-    """字符串区块。
-
-    PeReport 的真实字段是 `string_classes`（{类别: [值]}）与 `strings_summary`（含 merged）。
-    旧版读的是并不存在的 `report.strings`，导致该区块永远不生成——已修正。
-    """
+def _html_strings(report: Any, lang: str) -> str | None:
+    """字符串区块。读 PeReport.string_classes（{类别: [值]}）。"""
     strings = _g(report, "string_classes", None)
     if not strings:
         summary = _g(report, "strings_summary", {}) or {}
@@ -298,13 +386,13 @@ def _html_strings(report: Any) -> str | None:
         return None
     items = []
     if isinstance(strings, dict):
-        # 兼容 {category: [values, ...]} 或 {key: value}
         for k, v in strings.items():
+            label = _t(f"strcls.{k}", default=str(k), lang=lang)
             if isinstance(v, (list, tuple)):
                 for item in v:
-                    items.append(f"[{_esc(k)}] {_esc(item)}")
+                    items.append(f"[{_esc(label)}] {_esc(item)}")
             else:
-                items.append(f"[{_esc(k)}] {_esc(v)}")
+                items.append(f"[{_esc(label)}] {_esc(v)}")
     elif isinstance(strings, (list, tuple)):
         for item in strings:
             if isinstance(item, dict):
@@ -320,36 +408,40 @@ def _html_strings(report: Any) -> str | None:
     total = len(items)
     if total > MAX_HTML_STRING_ITEMS:
         items = items[:MAX_HTML_STRING_ITEMS]
-        items.append(f"... 其余 {total - MAX_HTML_STRING_ITEMS} 条未列出（避免报告过大）")
+        items.append(_esc(_t("report.strings_truncated", lang, n=total - MAX_HTML_STRING_ITEMS)))
     body = "\n".join(f"<div class='strline'>{it}</div>" for it in items)
     return f'<div class="strings">{body}</div>'
 
 
-def _html_risk_summary(report: Any, sections: list, risky: list) -> str:
+def _html_risk_summary(report: Any, sections: list, risky: list, lang: str) -> str:
     suspicious_sections = bool(_g(report, "suspicious_sections", False))
     n_susp = sum(1 for s in sections if _g(s, "is_suspicious", False))
     stat = _risk_stat(risky)
+    entropy_val = (_t("report.high_entropy_yes", lang, n=n_susp) if suspicious_sections
+                   else _t("report.high_entropy_no", lang))
     parts = [
-        f"高熵节区：{'是（%d 个）' % n_susp if suspicious_sections else '否'}",
-        f"高危 API：{len(risky)} 个（严重 {stat['严重']} · 中等 {stat['中等']} · 低 {stat['低']}）",
+        _t("report.high_entropy_field", lang, v=entropy_val),
+        _t("report.high_api_field", lang, n=len(risky),
+           crit=stat["严重"], med=stat["中等"], low=stat["低"]),
     ]
     return "<br>".join(parts)
 
 
-def _html_warning_banner(report: Any, sections: list, risky: list) -> str:
+def _html_warning_banner(report: Any, sections: list, risky: list, lang: str) -> str:
     suspicious_sections = bool(_g(report, "suspicious_sections", False))
     has_risky = bool(_get_risky(report))
     if not (suspicious_sections or has_risky):
         return ""
     reasons = []
     if suspicious_sections:
-        reasons.append("存在高熵节区（疑似加壳/加密）")
+        reasons.append(_t("report.banner_packed", lang))
     if has_risky:
-        reasons.append(f"检出 {len(risky)} 个高危 API")
+        reasons.append(_t("report.banner_api", lang, n=len(risky)))
     return (
         '<div class="banner">'
-        '⚠ 风险提示：' + "；".join(reasons) + "（纯静态分析，样本从未被执行）"
-        '</div>'
+        + _esc(_t("report.banner_title", lang)) + "；".join(_esc(r) for r in reasons)
+        + _esc(_t("report.banner_suffix", lang))
+        + '</div>'
     )
 
 
@@ -393,8 +485,9 @@ footer { color: #b2bec3; font-size: 12px; text-align: center; margin-top: 8px; }
 """
 
 
-def export_html(report: Any, out_path: Any) -> str:
+def export_html(report: Any, out_path: Any, lang: str | None = None) -> str:
     """导出为自包含单文件 HTML（CSS 内联，无外部依赖）。返回实际写入路径。"""
+    lang = lang or get_language()
     out = Path(out_path).expanduser().resolve()
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -406,22 +499,23 @@ def export_html(report: Any, out_path: Any) -> str:
     exports = _get_exports(report)
     risky = _get_risky(report)
 
-    filename = Path(_g(report, "path", "") or "未知文件").name
-    title = f"PE 分析报告 · {_esc(filename)}"
-    banner = _html_warning_banner(report, sections, risky)
-    summary = _html_risk_summary(report, sections, risky)
-    strings_html = _html_strings(report)
+    filename = Path(_g(report, "path", "") or "unknown").name
+    title = _esc(_t("report.title", lang, name=filename))
+    banner = _html_warning_banner(report, sections, risky, lang)
+    summary = _html_risk_summary(report, sections, risky, lang)
+    strings_html = _html_strings(report, lang)
 
-    blocks = [f'<section><h2>基本信息</h2>{_html_basic_table(report)}</section>']
-    blocks.append(f'<section><h2>节区表</h2>{_html_section_table(sections)}</section>')
-    blocks.append(f'<section><h2>导入表</h2>{_html_imports(imports)}</section>')
-    blocks.append(f'<section><h2>导出表</h2>{_html_exports(exports)}</section>')
-    blocks.append(f'<section><h2>高危 API</h2>{_html_risky(risky)}</section>')
+    blocks = [f'<section><h2>{_esc(_t("report.basic_title", lang))}</h2>{_html_basic_table(report, lang)}</section>']
+    blocks.append(f'<section><h2>{_esc(_t("packer.title", lang))}</h2>{_html_packer_table(report, lang)}</section>')
+    blocks.append(f'<section><h2>{_esc(_t("report.sections_title", lang))}</h2>{_html_section_table(sections, lang)}</section>')
+    blocks.append(f'<section><h2>{_esc(_t("report.imports_title", lang))}</h2>{_html_imports(imports, lang)}</section>')
+    blocks.append(f'<section><h2>{_esc(_t("report.exports_title", lang))}</h2>{_html_exports(exports, lang)}</section>')
+    blocks.append(f'<section><h2>{_esc(_t("report.risks_title", lang))}</h2>{_html_risky(risky, lang)}</section>')
     if strings_html is not None:
-        blocks.append(f'<section><h2>字符串</h2>{strings_html}</section>')
+        blocks.append(f'<section><h2>{_esc(_t("report.strings_title", lang))}</h2>{strings_html}</section>')
 
     doc = f"""<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="{'zh-CN' if lang == 'zh' else 'en'}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -430,11 +524,11 @@ def export_html(report: Any, out_path: Any) -> str:
 </head>
 <body>
 <h1>{title}</h1>
-<div class="subtitle">分析时间：{_now_text()}　|　Windows PE Inspector（纯静态分析）</div>
+<div class="subtitle">{_esc(_t('report.analyzed_at', lang, time=_now_text()))}</div>
 {banner}
-<div class="summary"><span class="label">风险摘要：</span><br>{summary}</div>
+<div class="summary"><span class="label">{_esc(_t('report.risk_summary_label', lang))}</span><br>{summary}</div>
 {''.join(blocks)}
-<footer>本报告由 Windows PE Inspector 生成 · 仅基于静态解析，不执行样本</footer>
+<footer>{_esc(_t('report.footer', lang))}</footer>
 </body>
 </html>
 """
@@ -443,15 +537,6 @@ def export_html(report: Any, out_path: Any) -> str:
     except OSError as exc:
         raise RuntimeError(f"写入 HTML 文件失败 {out}：{exc}") from exc
     return str(out)
-
-
-def _html_basic_table(report: Any) -> str:
-    rows = _basic_rows(report)
-    head = "<tr><th>项目</th><th>值</th></tr>"
-    body = "".join(
-        f"<tr><td class='k'>{_esc(k)}</td><td>{v}</td></tr>" for k, v in rows
-    )
-    return f'<table class="data">{head}{body}</table>'
 
 
 # ==========================================================================
@@ -491,16 +576,29 @@ def _excel_style_header(ws) -> None:
     ws.freeze_panes = "A2"
 
 
-def _excel_basic(ws, report: Any) -> None:
-    _ws_append(ws, ["项目", "值"])
-    for k, v in _basic_rows(report):
+def _excel_basic(ws, report: Any, lang: str) -> None:
+    _ws_append(ws, [_t("info.file", lang), _t("report.basic_title", lang)])
+    for k, v in _basic_rows(report, lang):
         _ws_append(ws, [k, v])
 
 
-def _excel_sections(ws, sections: list) -> None:
+def _excel_packers(ws, report: Any, lang: str) -> None:
+    _ws_append(ws, [_t("packer.col_packer", lang), _t("packer.col_evidence", lang)])
+    packers = _get_packers(report)
+    if not packers:
+        _ws_append(ws, [_t("packer.none", lang), ""])
+        return
+    for p in packers:
+        _ws_append(ws, [_g(p, "name", ""), _packer_evidence(p, lang)])
+
+
+def _excel_sections(ws, sections: list, lang: str) -> None:
     from openpyxl.styles import Font, PatternFill
 
-    _ws_append(ws, ["名称", "虚拟大小", "原始大小", "熵值", "权限", "中文含义", "标记"])
+    _ws_append(ws, [_t("sections.col_name", lang), _t("sections.col_vsize", lang),
+                    _t("sections.col_rsize", lang), _t("sections.col_entropy", lang),
+                    _t("sections.col_perms", lang), _t("sections.col_meaning", lang),
+                    _t("sections.col_flag", lang)])
     red_fill = PatternFill(fill_type="solid", fgColor="FDECEA")
     red_font = Font(color="C0392B", bold=True)
     for s in sections:
@@ -510,7 +608,7 @@ def _excel_sections(ws, sections: list) -> None:
             entropy_val = round(float(entropy), 3)
         except (TypeError, ValueError):
             entropy_val = entropy
-        mark = "高熵·疑似加壳/加密" if suspicious else "正常"
+        mark = _t("report.pos_suspicious", lang) if suspicious else _t("report.pos_normal", lang)
         _ws_append(ws, [
             _g(s, "name", ""),
             _human_size(_g(s, "virtual_size", 0)),
@@ -526,51 +624,57 @@ def _excel_sections(ws, sections: list) -> None:
                 cell.font = red_font
 
 
-def _excel_imports(ws, imports: list) -> None:
-    _ws_append(ws, ["DLL", "函数", "来源"])
+def _excel_imports(ws, imports: list, lang: str) -> None:
+    _ws_append(ws, [_t("risks.col_dll", lang), _t("risks.col_function", lang),
+                    _t("imports.col_meaning", lang)])
     for dll in imports:
         symbols = _g(dll, "symbols", []) or []
+        meaning = _g(dll, "meaning", "") or ""
         if not symbols:
-            _ws_append(ws, [_g(dll, "dll", ""), "(无函数)", "—"])
+            _ws_append(ws, [_g(dll, "dll", ""), "—", meaning])
             continue
         for sym in symbols:
             name = _g(sym, "name")
             ordinal = _g(sym, "ordinal")
             if name is not None:
-                disp, src = name, "名称"
+                disp = name
             elif ordinal is not None:
-                disp, src = f"Ordinal#{ordinal}", "序号"
+                disp = f"Ordinal#{ordinal}"
             else:
-                disp, src = "(未知)", "—"
-            _ws_append(ws, [_g(dll, "dll", ""), disp, src])
+                disp = "—"
+            _ws_append(ws, [_g(dll, "dll", ""), disp, meaning])
 
 
-def _excel_exports(ws, exports: list) -> None:
-    _ws_append(ws, ["序号", "RVA", "名称", "转发目标"])
+def _excel_exports(ws, exports: list, lang: str) -> None:
+    _ws_append(ws, [_t("exports.col_ordinal", lang), _t("exports.col_rva", lang),
+                    _t("exports.col_name", lang), _t("exports.col_forward", lang)])
     for e in exports:
-        name = _g(e, "name") or "(仅序号)"
+        name = _g(e, "name") or _t("exports.ordinal_only", lang)
         forward = _g(e, "forwarder") or "—"
         _ws_append(ws, [_g(e, "ordinal", ""), _hex(_g(e, "rva", 0), 8), name, forward])
 
 
-def _excel_risky(ws, risky: list) -> None:
+def _excel_risky(ws, risky: list, lang: str) -> None:
     from openpyxl.styles import Font
 
-    _ws_append(ws, ["等级", "分类", "DLL", "函数", "说明"])
+    _ws_append(ws, [_t("risks.col_risk", lang), _t("risks.col_category", lang),
+                    _t("risks.col_dll", lang), _t("risks.col_function", lang),
+                    _t("risks.col_desc", lang)])
     for x in risky:
         lv = _g(x, "risk_level", "")
         color = RISK_COLORS.get(lv, RISK_COLOR_DEFAULT).lstrip("#")
         _ws_append(ws, [
-            lv, _g(x, "category", ""), _g(x, "dll", ""),
-            _g(x, "function", ""), _g(x, "description", ""),
+            _level_text(lv, lang), _category_text(_g(x, "category", ""), lang),
+            _g(x, "dll", ""), _g(x, "function", ""), _g(x, "description", ""),
         ])
         font = Font(color=color, bold=(lv == "严重"))
         for cell in ws[ws.max_row]:
             cell.font = font
 
 
-def export_excel(report: Any, out_path: Any) -> str:
+def export_excel(report: Any, out_path: Any, lang: str | None = None) -> str:
     """导出为 Excel（openpyxl，多工作表）。返回实际写入路径。"""
+    lang = lang or get_language()
     try:
         from openpyxl import Workbook
     except ImportError as exc:  # pragma: no cover
@@ -591,20 +695,23 @@ def export_excel(report: Any, out_path: Any) -> str:
 
     wb = Workbook()
     ws_basic = wb.active
-    ws_basic.title = "基本信息"
-    _excel_basic(ws_basic, report)
+    ws_basic.title = _t("report.basic_title", lang)
+    _excel_basic(ws_basic, report, lang)
 
-    ws_sec = wb.create_sheet("节区")
-    _excel_sections(ws_sec, sections)
+    ws_pack = wb.create_sheet(_t("packer.title", lang))
+    _excel_packers(ws_pack, report, lang)
 
-    ws_imp = wb.create_sheet("导入表")
-    _excel_imports(ws_imp, imports)
+    ws_sec = wb.create_sheet(_t("report.sections_title", lang))
+    _excel_sections(ws_sec, sections, lang)
 
-    ws_exp = wb.create_sheet("导出表")
-    _excel_exports(ws_exp, exports)
+    ws_imp = wb.create_sheet(_t("report.imports_title", lang))
+    _excel_imports(ws_imp, imports, lang)
 
-    ws_risk = wb.create_sheet("高危 API")
-    _excel_risky(ws_risk, risky)
+    ws_exp = wb.create_sheet(_t("report.exports_title", lang))
+    _excel_exports(ws_exp, exports, lang)
+
+    ws_risk = wb.create_sheet(_t("report.risks_title", lang))
+    _excel_risky(ws_risk, risky, lang)
 
     for ws in wb.worksheets:
         _excel_style_header(ws)
@@ -621,11 +728,12 @@ def export_excel(report: Any, out_path: Any) -> str:
 # 统一入口
 # ==========================================================================
 
-def export_report(report: Any, out_path: Any, fmt: str = "html") -> str:
+def export_report(report: Any, out_path: Any, fmt: str = "html", lang: str | None = None) -> str:
     """统一导出入口。
 
     fmt: "html" | "xlsx"；若未显式指定或指定为 "auto"，则按 out_path 扩展名
     自动分派（.html/.htm -> HTML，.xlsx/.xls -> Excel），否则默认 HTML。
+    lang: 报告语言（"zh" / "en"），缺省取当前语言。
     """
     out = Path(out_path).expanduser().resolve()
     fmt = (fmt or "auto").lower()
@@ -638,8 +746,8 @@ def export_report(report: Any, out_path: Any, fmt: str = "html") -> str:
             fmt = "html"
 
     if fmt in ("xlsx", "excel"):
-        return export_excel(report, out)
+        return export_excel(report, out, lang=lang)
     if fmt == "html":
-        return export_html(report, out)
+        return export_html(report, out, lang=lang)
 
     raise ValueError(f"不支持的导出格式：{fmt}（仅支持 html / xlsx）")

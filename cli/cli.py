@@ -9,6 +9,10 @@
     python cmd_main.py <PE 文件> --imports    # 只看导入表
     python cmd_main.py <PE 文件> --exports    # 只看导出表
     python cmd_main.py <PE 文件> --risks      # 只看高危 API
+    python cmd_main.py <PE 文件> --packers    # 只看打包器识别
+    python cmd_main.py <PE 文件> --signature  # 只看数字签名
+    python cmd_main.py <PE 文件> --strings    # 只看字符串
+    python cmd_main.py <PE 文件> --lang en    # 英文输出（默认 zh）
 
 退出码：0 成功 / 1 文件或依赖问题 / 2 不是有效的 PE 文件
 """
@@ -18,7 +22,14 @@ from __future__ import annotations
 import argparse
 import sys
 
-from achieve.pe_parser import ENTROPY_WARN, PeParseError, human_size, parse_pe, zh_pair
+from achieve import i18n
+from achieve.i18n import t
+from achieve.pe_parser import (
+    ENTROPY_WARN,
+    PeParseError,
+    human_size,
+    parse_pe,
+)
 from achieve.report_exporter import export_report
 
 # 中文输出在 GBK 控制台下容易报 UnicodeEncodeError，统一切到 UTF-8。
@@ -32,111 +43,165 @@ def rule(title: str) -> None:
     print(f"== {title} ==")
 
 
+def _sig_text(report) -> str:
+    """签名的单行摘要。"""
+    sig = getattr(report, "signature", None)
+    if not sig or not getattr(sig, "present", False):
+        return t("signature.none")
+    status = getattr(sig, "status", "unknown")
+    key = {"valid": "signature.valid", "invalid": "signature.invalid"}.get(status, "signature.unknown")
+    text = t(key)
+    signer = getattr(sig, "signer", "")
+    if signer:
+        text += f" · {t('signature.signer')}: {signer}"
+    issuer = getattr(sig, "issuer", "")
+    if issuer:
+        text += f" · {t('signature.issuer')}: {issuer}"
+    detail = getattr(sig, "detail", "")
+    if detail and status == "invalid":
+        text += f" ({detail})"
+    return text
+
+
+def _packer_names(report) -> str:
+    packers = getattr(report, "packers", None) or []
+    if not packers:
+        return t("packer.none")
+    return ", ".join(getattr(p, "name", "") for p in packers)
+
+
 def show_header(r) -> None:
-    rule("基本信息")
-    print(f"文件       : {r.path}")
-    print(f"大小       : {human_size(r.file_size)}")
-    print(f"格式       : {r.kind}")
-    print(f"架构       : {zh_pair(r.machine_name, r.machine_zh)}")
-    print(f"子系统     : {zh_pair(r.subsystem_name, r.subsystem_zh)}")
-    print(f"编译时间   : {r.compile_time_text}")
-    print(f"入口点 RVA : 0x{r.entry_point_rva:08X}")
-    print(f"镜像基址   : 0x{r.image_base:016X}")
-    print(f"节区数量   : {r.num_sections}")
-    print(f"校验和     : 0x{r.checksum:08X}")
-    print(f"数据目录   : {r.num_data_directories} 项")
-    print(f"位数判定   : {r.bits} 位")
+    rule(t("tab.basic"))
+    print(f"{t('info.file'):<12}: {r.path}")
+    print(f"{t('info.size'):<12}: {human_size(r.file_size)}")
+    print(f"{t('info.format'):<12}: {r.kind}")
+    print(f"{t('info.machine'):<12}: {r.machine_name}（{r.machine_zh}）")
+    print(f"{t('info.subsystem'):<12}: {r.subsystem_name}（{r.subsystem_zh}）")
+    print(f"{t('info.compile_time'):<12}: {r.compile_time_text}")
+    print(f"{t('info.entry_point'):<12}: 0x{r.entry_point_rva:08X}")
+    print(f"{t('info.image_base'):<12}: 0x{r.image_base:016X}")
+    print(f"{t('info.sections_count'):<12}: {r.num_sections}")
+    print(f"{t('info.checksum'):<12}: 0x{r.checksum:08X}")
+    print(f"{t('info.data_dirs'):<12}: {t('info.unit_items', n=r.num_data_directories)}")
+    print(f"{t('info.bits'):<12}: {t('info.unit_bits', n=r.bits)}")
+    print(f"{t('packer.title'):<12}: {_packer_names(r)}")
+    print(f"{t('signature.title'):<12}: {_sig_text(r)}")
+    for w in (r.warnings or []):
+        print(f"[!] {w}")
 
 
 def show_sections(r) -> None:
-    rule("节区表")
-    print(f"{'名称':<10}{'虚拟大小':>12}{'原始大小':>12}{'熵值':>8}  {'权限':<12}  含义")
+    rule(t("tab.sections"))
+    print(f"{t('sections.col_name'):<12}{t('sections.col_vsize'):>12}{t('sections.col_rsize'):>12}"
+          f"{t('sections.col_entropy'):>8}  {t('sections.col_perms'):<10}  {t('sections.col_meaning')}")
     print("-" * 96)
     for s in r.sections:
-        flag = "  <== 疑似加壳/加密" if s.is_suspicious else ""
+        flag = f"  <== {t('sections.suspect')}" if s.is_suspicious else ""
         print(
-            f"{s.name:<10}{human_size(s.virtual_size):>12}"
-            f"{human_size(s.raw_size):>12}{s.entropy:>8.2f}  {s.perms:<12}  {s.perms_zh}{flag}"
+            f"{s.name:<12}{human_size(s.virtual_size):>12}"
+            f"{human_size(s.raw_size):>12}{s.entropy:>8.2f}  {s.perms:<10}  {s.perms_zh}{flag}"
         )
     print("-" * 96)
-    print(f"熵值阈值 {ENTROPY_WARN}（越接近 8.0 越可能是压缩/加密数据）")
+    print(t("cli.entropy_threshold", n=ENTROPY_WARN))
     if r.suspicious_sections:
-        print("[!] 存在高熵节区：该文件很可能被加壳或加密。")
+        print(t("cli.high_entropy_hint"))
 
 
 def show_imports(r) -> None:
-    rule("导入表（依赖的 DLL 及其函数）")
+    rule(t("tab.imports"))
     if not r.has_imports:
-        print("(无导入表)")
+        print(t("common.no_imports"))
         return
     total = 0
     for dll in r.imports:
-        print(f"\n{dll.dll}  ({len(dll.symbols)} 个函数)")
+        meaning = f"  — {dll.meaning}" if getattr(dll, "meaning", "") else ""
+        print(f"\n{dll.dll}  ({len(dll.symbols)}){meaning}")
         for sym in dll.symbols:
             print(f"    {sym.display}")
         total += len(dll.symbols)
     print()
-    print(f"合计：{len(r.imports)} 个 DLL，{total} 个函数")
+    print(t("report.imports_total", ndll=len(r.imports), nfun=total))
 
 
 def show_exports(r) -> None:
-    rule("导出表")
+    rule(t("tab.exports"))
     if not r.has_exports:
-        print("(无导出表，通常说明这是可执行程序而非 DLL)")
+        print(t("common.no_exports"))
         return
-    print(f"{'序号':>6}  {'RVA':>10}  {'名称':<40} 转发目标")
+    print(f"{t('exports.col_ordinal'):>7}  {t('exports.col_rva'):>10}  "
+          f"{t('exports.col_name'):<40} {t('exports.col_forward')}")
     print("-" * 78)
     for sym in r.exports:
-        name = sym.name or "(仅序号)"
+        name = sym.name or t("exports.ordinal_only")
         forward = sym.forwarder or ""
-        print(f"{sym.ordinal:>6}  0x{sym.rva:08X}  {name:<40} {forward}")
+        print(f"{sym.ordinal:>7}  0x{sym.rva:08X}  {name:<40} {forward}")
     print("-" * 78)
-    print(f"合计：{len(r.exports)} 个导出符号")
+    print(t("report.exports_total", n=len(r.exports)))
 
 
 def show_risks(r) -> None:
-    rule("高危 API（基于导入表静态匹配）")
+    rule(t("tab.risks"))
     if not r.has_risky_imports:
-        print("[ok] 未匹配到高危 API")
+        print(t("common.no_risky"))
         return
-    print(f"{'等级':<6}{'分类':<10}{'DLL':<18}{'函数':<26}说明")
+    from achieve.pe_parser import translate
+    print(f"{t('risks.col_risk'):<6}{t('risks.col_category'):<12}{t('risks.col_dll'):<18}"
+          f"{t('risks.col_function'):<26}{t('risks.col_desc')}")
     print("-" * 96)
     for x in r.risky_imports:
-        print(f"{x.risk_level:<6}{x.category:<10}{x.dll:<18}{x.function:<26}{x.description}")
-    # 按等级汇总
+        level = t(f"risk.{x.risk_level}", default=x.risk_level)
+        cat = translate("RISK_CATEGORY", x.category, default=x.category)
+        print(f"{level:<6}{cat:<12}{x.dll:<18}{x.function:<26}{x.description}")
     by_level = {"严重": 0, "中等": 0, "低": 0}
     for x in r.risky_imports:
         by_level[x.risk_level] = by_level.get(x.risk_level, 0) + 1
     print("-" * 96)
-    print(
-        f"合计 {len(r.risky_imports)} 个　严重 {by_level['严重']}　"
-        f"中等 {by_level['中等']}　低 {by_level['低']}"
-    )
+    print(t("risks.summary", n=len(r.risky_imports), crit=by_level["严重"],
+            med=by_level["中等"], low=by_level["低"]))
+
+
+def show_packers(r) -> None:
+    rule(t("packer.title"))
+    packers = r.packers or []
+    if not packers:
+        print(t("packer.none"))
+        return
+    for p in packers:
+        parts = []
+        for s in p.sections:
+            parts.append(t("packer.evidence_section", name=s))
+        for s in p.strings:
+            parts.append(t("packer.evidence_string", text=s))
+        print(f"  {p.name}: " + ("; ".join(parts) if parts else ""))
+
+
+def show_signature(r) -> None:
+    rule(t("signature.title"))
+    print(_sig_text(r))
 
 
 def show_strings(r) -> None:
-    rule("字符串提取（strings.exe + pefile 双重来源）")
+    rule(t("tab.strings"))
     summary = r.strings_summary or {}
     ok = summary.get("external_ok")
-    print(f"来源       : {summary.get('source', '?')}（外部工具 {'成功' if ok else '未使用/失败'}）")
+    ext = t("strings.ext_ok") if ok else t("strings.ext_fail")
+    print(f"{t('strings.summary', source=summary.get('source', '?'), ext=ext, n=r.string_count, counts='').rstrip()}")
     if summary.get("error"):
-        print(f"外部工具   : {summary['error']}")
-    print(f"字符串总数 : {r.string_count}")
+        print(f"{t('signature.title')}: {summary['error']}")
     classes = r.string_classes or {}
-    # 前 5 类是可疑线索，后 4 类是编译产物噪音（API / DLL / 节区名 / XML），
-    # 单列出来是为了让「其他」里剩下的才是真正值得人工看的内容。
-    for key, label in (("urls", "URL"), ("ips", "IP"),
-                       ("registry", "注册表"), ("paths", "路径"), ("pdb", "PDB"),
-                       ("xml", "XML"), ("sections", "节区名"),
-                       ("dlls", "DLL 名称"), ("apis", "API 名称")):
+    for key, label in (("urls", "strcls.urls"), ("ips", "strcls.ips"),
+                       ("registry", "strcls.registry"), ("paths", "strcls.paths"),
+                       ("pdb", "strcls.pdb"), ("xml", "strcls.xml"),
+                       ("sections", "strcls.sections"), ("dlls", "strcls.dlls"),
+                       ("apis", "strcls.apis")):
         items = classes.get(key) or []
         if items:
-            print(f"\n  [{label}] 命中 {len(items)} 条，前 20 条：")
+            print(t("cli.strings_top_n", label=t(label), n=len(items), k=min(20, len(items))))
             for s in items[:20]:
                 print(f"    {s}")
     others = classes.get("others") or []
     if others:
-        print(f"\n  [其他] 前 10 条：")
+        print(t("cli.strings_others", k=min(10, len(others))))
         for s in others[:10]:
             print(f"    {s}")
 
@@ -151,22 +216,28 @@ def main() -> int:
     parser.add_argument("--imports", action="store_true", help="显示导入表")
     parser.add_argument("--exports", action="store_true", help="显示导出表")
     parser.add_argument("--risks", action="store_true", help="显示高危 API 列表")
+    parser.add_argument("--packers", action="store_true", help="显示打包器识别结果")
+    parser.add_argument("--signature", action="store_true", help="显示数字签名信息")
     parser.add_argument("--strings", action="store_true", help="显示提取到的字符串")
     parser.add_argument("--export", metavar="PATH", help="导出报告到文件（.html 或 .xlsx）")
     parser.add_argument("--format", choices=["html", "xlsx", "auto"], default="auto",
                         help="导出格式，默认按扩展名自动判断")
+    parser.add_argument("--lang", choices=["zh", "en"], default="zh",
+                        help="输出语言 / report language (default: zh)")
     parser.add_argument("--all", action="store_true", help="显示全部信息（默认行为）")
     args = parser.parse_args()
 
+    i18n.set_language(args.lang)
+
     try:
-        report = parse_pe(args.file)
+        report = parse_pe(args.file, lang=args.lang)
     except PeParseError as exc:
         print(f"[x] {exc}")
         return exc.exit_code
 
     show_all = args.all or not (
         args.header or args.sections or args.imports or args.exports
-        or args.risks or args.strings or args.export
+        or args.risks or args.packers or args.signature or args.strings or args.export
     )
 
     if show_all or args.header:
@@ -179,19 +250,23 @@ def main() -> int:
         show_exports(report)
     if show_all or args.risks:
         show_risks(report)
+    if show_all or args.packers:
+        show_packers(report)
+    if show_all or args.signature:
+        show_signature(report)
     if show_all or args.strings:
         show_strings(report)
 
     if args.export:
         try:
-            saved = export_report(report, args.export, fmt=args.format)
+            saved = export_report(report, args.export, fmt=args.format, lang=args.lang)
         except Exception as exc:  # noqa: BLE001
-            print(f"[x] 报告导出失败：{exc}")
+            print(t("cli.export_fail", msg=exc))
             return 1
-        print(f"[+] 报告已导出：{saved}")
+        print(t("cli.export_ok", path=saved))
 
     print()
-    print("解析完成（纯静态分析，样本从未被执行）。")
+    print(t("cli.done"))
     return 0
 
 

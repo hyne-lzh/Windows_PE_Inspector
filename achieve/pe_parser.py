@@ -1,7 +1,17 @@
 """PE 解析核心：数据结构 + 纯解析逻辑。
 
-只依赖 pefile 与标准库；**禁止 import customtkinter / tkinter**。
+只依赖 pefile 与标准库（数字签名校验在 Windows 上用 ctypes 调系统 API）；
+**禁止 import customtkinter / tkinter**。
 解析入口 parse_pe() 返回 PeReport，供命令行与图形界面共用（单一真相源）。
+
+能力概览
+--------
+- 文件头 / 节区（熵值 + 采样）/ 导入表 / 导出表
+- 高危 API 匹配（外置 assets/high_risk_apis.json，608 条 / 22 分类）
+- DLL 用途说明（外置 assets/dll_meanings.json）
+- 打包器识别（UPX / PyInstaller / Nuitka / VMProtect 等）
+- 数字签名校验（Windows Authenticode，绝不执行样本）
+- 中英双语（文本随当前语言生成，见 achieve/i18n.py）
 """
 
 from __future__ import annotations
@@ -9,12 +19,14 @@ from __future__ import annotations
 import datetime
 import json
 import math
+import struct
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pefile
 
+from .i18n import get_language, t
 from .strings_extractor import classify_strings, extract_strings
 
 # 节区熵值超过该阈值即提示"疑似加壳/加密"（8.0 为理论上限）
@@ -27,6 +39,9 @@ ENTROPY_SAMPLE_SIZE = 4 * 1024 * 1024          # 采样 4 MB
 # 安全上限：超过该大小直接拒绝解析（本工具要面对恶意样本，不能让它耗尽内存）
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024        # 2 GB
 
+# 打包器特征字符串扫描的字符串条数上限（防超大样本卡顿）
+PACKER_SCAN_LIMIT = 20000
+
 # 节区特征位（挑常用的）
 SECTION_FLAGS = (
     (0x00000020, "CODE"),
@@ -37,125 +52,191 @@ SECTION_FLAGS = (
     (0x80000000, "W"),
 )
 
-# 通用翻译表（PE 各分类的英文标识 → 中文说明）
+# 通用翻译表（PE 各分类的英文标识 → 各语言说明）
 # --------------------------------------------------------------------------
-# 与节区权限翻译一样,所有需要本地化的英文键都集中在一处。新增分类只需往
-# _BUILTIN_TRANSLATIONS 加一个键,然后调用 translate("分类", key) 即可。
+# 每个条目的值统一为 {语言代码: 文本}，例如 {"zh": "代码", "en": "Code"}。
+# 新增分类只需往 _BUILTIN_TRANSLATIONS 加一个键，然后调用
+# translate("分类", key, lang=...) 即可。
 # --------------------------------------------------------------------------
-_BUILTIN_TRANSLATIONS: dict[str, dict[str, str]] = {
+_BUILTIN_TRANSLATIONS: dict[str, dict[str, dict[str, str]]] = {
     "SECTION_FLAGS": {
-        "CODE": "代码",
-        "IDATA": "已初始化数据",
-        "UDATA": "未初始化数据",
-        "X": "可执行",
-        "R": "可读",
-        "W": "可写",
+        "CODE": {"zh": "代码", "en": "Code"},
+        "IDATA": {"zh": "已初始化数据", "en": "Initialized data"},
+        "UDATA": {"zh": "未初始化数据", "en": "Uninitialized data"},
+        "X": {"zh": "可执行", "en": "Executable"},
+        "R": {"zh": "可读", "en": "Readable"},
+        "W": {"zh": "可写", "en": "Writable"},
     },
     "MACHINE": {
-        "IMAGE_FILE_MACHINE_AMD64": "x64 64 位",
-        "IMAGE_FILE_MACHINE_I386": "x86 32 位",
-        "IMAGE_FILE_MACHINE_IA64": "IA64 安腾",
-        "IMAGE_FILE_MACHINE_ARM": "ARM 32 位",
-        "IMAGE_FILE_MACHINE_ARM64": "ARM64 64 位",
-        "IMAGE_FILE_MACHINE_ARMNT": "ARM Thumb-2",
-        "IMAGE_FILE_MACHINE_THUMB": "ARM Thumb",
-        "IMAGE_FILE_MACHINE_ALPHA": "Alpha",
-        "IMAGE_FILE_MACHINE_MIPS16": "MIPS 16 位",
-        "IMAGE_FILE_MACHINE_SH3": "SuperH 32 位",
-        "IMAGE_FILE_MACHINE_SH3E": "SuperH 32 位增强",
-        "IMAGE_FILE_MACHINE_SH4": "SuperH 64 位",
-        "IMAGE_FILE_MACHINE_SH5": "SuperH 64 位增强",
-        "IMAGE_FILE_MACHINE_RISCV32": "RISC-V 32 位",
-        "IMAGE_FILE_MACHINE_RISCV64": "RISC-V 64 位",
-        "IMAGE_FILE_MACHINE_RISCV128": "RISC-V 128 位",
-        "IMAGE_FILE_MACHINE_LOONGARCH32": "龙芯 LoongArch 32 位",
-        "IMAGE_FILE_MACHINE_LOONGARCH64": "龙芯 LoongArch 64 位",
-        "IMAGE_FILE_MACHINE_UNKNOWN": "未知架构",
+        "IMAGE_FILE_MACHINE_AMD64": {"zh": "x64 64 位", "en": "x64 (64-bit)"},
+        "IMAGE_FILE_MACHINE_I386": {"zh": "x86 32 位", "en": "x86 (32-bit)"},
+        "IMAGE_FILE_MACHINE_IA64": {"zh": "IA64 安腾", "en": "IA64 Itanium"},
+        "IMAGE_FILE_MACHINE_ARM": {"zh": "ARM 32 位", "en": "ARM (32-bit)"},
+        "IMAGE_FILE_MACHINE_ARM64": {"zh": "ARM64 64 位", "en": "ARM64 (64-bit)"},
+        "IMAGE_FILE_MACHINE_ARMNT": {"zh": "ARM Thumb-2", "en": "ARM Thumb-2"},
+        "IMAGE_FILE_MACHINE_THUMB": {"zh": "ARM Thumb", "en": "ARM Thumb"},
+        "IMAGE_FILE_MACHINE_ALPHA": {"zh": "Alpha", "en": "Alpha"},
+        "IMAGE_FILE_MACHINE_MIPS16": {"zh": "MIPS 16 位", "en": "MIPS (16-bit)"},
+        "IMAGE_FILE_MACHINE_SH3": {"zh": "SuperH 32 位", "en": "SuperH (32-bit)"},
+        "IMAGE_FILE_MACHINE_SH3E": {"zh": "SuperH 32 位增强", "en": "SuperH (32-bit, enhanced)"},
+        "IMAGE_FILE_MACHINE_SH4": {"zh": "SuperH 64 位", "en": "SuperH (64-bit)"},
+        "IMAGE_FILE_MACHINE_SH5": {"zh": "SuperH 64 位增强", "en": "SuperH (64-bit, enhanced)"},
+        "IMAGE_FILE_MACHINE_RISCV32": {"zh": "RISC-V 32 位", "en": "RISC-V (32-bit)"},
+        "IMAGE_FILE_MACHINE_RISCV64": {"zh": "RISC-V 64 位", "en": "RISC-V (64-bit)"},
+        "IMAGE_FILE_MACHINE_RISCV128": {"zh": "RISC-V 128 位", "en": "RISC-V (128-bit)"},
+        "IMAGE_FILE_MACHINE_LOONGARCH32": {"zh": "龙芯 LoongArch 32 位", "en": "LoongArch (32-bit)"},
+        "IMAGE_FILE_MACHINE_LOONGARCH64": {"zh": "龙芯 LoongArch 64 位", "en": "LoongArch (64-bit)"},
+        "IMAGE_FILE_MACHINE_UNKNOWN": {"zh": "未知架构", "en": "Unknown architecture"},
     },
     "SUBSYSTEM": {
-        "IMAGE_SUBSYSTEM_UNKNOWN": "未知子系统",
-        "IMAGE_SUBSYSTEM_NATIVE": "原生内核驱动",
-        "IMAGE_SUBSYSTEM_WINDOWS_GUI": "Windows 图形界面程序",
-        "IMAGE_SUBSYSTEM_WINDOWS_CUI": "Windows 控制台程序",
-        "IMAGE_SUBSYSTEM_OS2_CUI": "OS/2 控制台程序",
-        "IMAGE_SUBSYSTEM_POSIX_CUI": "POSIX 控制台程序",
-        "IMAGE_SUBSYSTEM_NATIVE_WINDOWS": "原生 Windows",
-        "IMAGE_SUBSYSTEM_WINDOWS_CE_GUI": "Windows CE 图形界面",
-        "IMAGE_SUBSYSTEM_EFI_APPLICATION": "EFI 应用程序",
-        "IMAGE_SUBSYSTEM_EFI_BOOT_SERVICE_DRIVER": "EFI 引导服务驱动",
-        "IMAGE_SUBSYSTEM_EFI_RUNTIME_DRIVER": "EFI 运行时驱动",
-        "IMAGE_SUBSYSTEM_EFI_ROM": "EFI ROM 映像",
-        "IMAGE_SUBSYSTEM_XBOX": "Xbox 游戏机",
-        "IMAGE_SUBSYSTEM_WINDOWS_BOOT_APPLICATION": "Windows 引导应用程序",
+        "IMAGE_SUBSYSTEM_UNKNOWN": {"zh": "未知子系统", "en": "Unknown subsystem"},
+        "IMAGE_SUBSYSTEM_NATIVE": {"zh": "原生内核驱动", "en": "Native (kernel driver)"},
+        "IMAGE_SUBSYSTEM_WINDOWS_GUI": {"zh": "Windows 图形界面程序", "en": "Windows GUI"},
+        "IMAGE_SUBSYSTEM_WINDOWS_CUI": {"zh": "Windows 控制台程序", "en": "Windows console"},
+        "IMAGE_SUBSYSTEM_OS2_CUI": {"zh": "OS/2 控制台程序", "en": "OS/2 console"},
+        "IMAGE_SUBSYSTEM_POSIX_CUI": {"zh": "POSIX 控制台程序", "en": "POSIX console"},
+        "IMAGE_SUBSYSTEM_NATIVE_WINDOWS": {"zh": "原生 Windows", "en": "Native Windows"},
+        "IMAGE_SUBSYSTEM_WINDOWS_CE_GUI": {"zh": "Windows CE 图形界面", "en": "Windows CE GUI"},
+        "IMAGE_SUBSYSTEM_EFI_APPLICATION": {"zh": "EFI 应用程序", "en": "EFI application"},
+        "IMAGE_SUBSYSTEM_EFI_BOOT_SERVICE_DRIVER": {"zh": "EFI 引导服务驱动", "en": "EFI boot-service driver"},
+        "IMAGE_SUBSYSTEM_EFI_RUNTIME_DRIVER": {"zh": "EFI 运行时驱动", "en": "EFI runtime driver"},
+        "IMAGE_SUBSYSTEM_EFI_ROM": {"zh": "EFI ROM 映像", "en": "EFI ROM image"},
+        "IMAGE_SUBSYSTEM_XBOX": {"zh": "Xbox 游戏机", "en": "Xbox"},
+        "IMAGE_SUBSYSTEM_WINDOWS_BOOT_APPLICATION": {"zh": "Windows 引导应用程序", "en": "Windows boot application"},
     },
-    # 预留分类占位（未来按需启用,DLL 名/导入表特征名/告警级别等都可挂在这里）
+    "RISK_CATEGORY": {
+        "进程注入": {"zh": "进程注入", "en": "Process injection"},
+        "进程操作": {"zh": "进程操作", "en": "Process operations"},
+        "DLL 操作": {"zh": "DLL 操作", "en": "DLL operations"},
+        "内存操作": {"zh": "内存操作", "en": "Memory operations"},
+        "注册表": {"zh": "注册表", "en": "Registry"},
+        "网络": {"zh": "网络", "en": "Network"},
+        "文件": {"zh": "文件", "en": "File"},
+        "加密": {"zh": "加密", "en": "Cryptography"},
+        "反调试": {"zh": "反调试", "en": "Anti-debugging"},
+        "键盘记录": {"zh": "键盘记录", "en": "Keylogging"},
+        "屏幕截图": {"zh": "屏幕截图", "en": "Screen capture"},
+        "自启动": {"zh": "自启动", "en": "Persistence"},
+        "信息收集": {"zh": "信息收集", "en": "Information gathering"},
+        "凭据窃取": {"zh": "凭据窃取", "en": "Credential theft"},
+        "防御规避": {"zh": "防御规避", "en": "Defense evasion"},
+        "横向移动": {"zh": "横向移动", "en": "Lateral movement"},
+        "系统破坏": {"zh": "系统破坏", "en": "System destruction"},
+        "音视频采集": {"zh": "音视频采集", "en": "Audio/video capture"},
+        "内核操作": {"zh": "内核操作", "en": "Kernel operations"},
+        "内核钩子": {"zh": "内核钩子", "en": "Kernel hooks"},
+        "驱动加载": {"zh": "驱动加载", "en": "Driver loading"},
+        "网络过滤": {"zh": "网络过滤", "en": "Network filtering"},
+    },
+    # 预留分类占位（未来按需启用）
     "DLL": {},
 }
 
-# 外置翻译文件路径（项目根 assets/ 下,用户可自行编辑扩充,无需改代码）
+# 外置翻译文件路径（项目根 assets/ 下，用户可自行编辑扩充，无需改代码）
 TRANSLATIONS_PATH = Path(__file__).resolve().parent.parent / "assets" / "translations.json"
 
+# 加载期告警：以 (i18n_key, kwargs) 形式记录，避免"静默降级"——见 _load_* 函数。
+# 由 _build_report 翻译后并入 report.warnings。
+_LOAD_WARNINGS: list[tuple[str, dict]] = []
 
-def _load_translations() -> dict[str, dict[str, str]]:
+
+def _norm_trans_entry(value) -> dict[str, str]:
+    """把外置翻译条目归一化为 {lang: text}。
+
+    - 新格式：{"zh": "...", "en": "..."} → 原样取字符串值
+    - 旧格式："中文" → 视为中文（向后兼容）
+    - 其它：忽略
+    """
+    if isinstance(value, dict):
+        out: dict[str, str] = {}
+        for lang, text in value.items():
+            if isinstance(text, str) and text:
+                out[str(lang)] = text
+        return out
+    if isinstance(value, str) and value:
+        return {"zh": value}
+    return {}
+
+
+def _load_translations() -> dict[str, dict[str, dict[str, str]]]:
     """从 assets/translations.json 合并到内置翻译表。
 
-    外置的目的：让用户能自行编辑/扩充词条,不必改动 Python 代码。
-    加载失败(文件缺失、格式错误)时回退到内置条目,保证功能不残废。
-    合并策略：内置为底,外置按分类覆盖;外置分类里只接受 {str: str}。
+    外置的目的：让用户能自行编辑/扩充词条，不必改动 Python 代码。
+    加载失败时**记录告警并回退内置**（不再静默 pass），告警会进入
+    report.warnings，分析员能明确知道自定义词条未生效。
+    合并策略：内置为底，外置按分类覆盖。
     """
-    merged: dict[str, dict[str, str]] = {k: dict(v) for k, v in _BUILTIN_TRANSLATIONS.items()}
+    merged: dict[str, dict[str, dict[str, str]]] = {
+        cat: {key: dict(val) for key, val in bucket.items()}
+        for cat, bucket in _BUILTIN_TRANSLATIONS.items()
+    }
     try:
         with TRANSLATIONS_PATH.open(encoding="utf-8") as fh:
             raw = json.load(fh)
-        if not isinstance(raw, dict):
-            return merged
-        for cat, items in raw.items():
-            if not isinstance(items, dict):
-                continue
-            bucket = merged.setdefault(cat, {})
-            for k, v in items.items():
-                if isinstance(v, str):
-                    bucket[str(k)] = v
-    except Exception:  # noqa: BLE001
-        pass
+    except FileNotFoundError:
+        # 外置文件本就是可选项，缺失不告警
+        return merged
+    except (OSError, json.JSONDecodeError) as exc:
+        _LOAD_WARNINGS.append(("warn.trans_load_failed", {"err": exc}))
+        return merged
+
+    if not isinstance(raw, dict):
+        _LOAD_WARNINGS.append(("warn.trans_bad_root", {}))
+        return merged
+
+    for cat, items in raw.items():
+        if not isinstance(items, dict):
+            continue
+        bucket = merged.setdefault(str(cat), {})
+        for key, value in items.items():
+            norm = _norm_trans_entry(value)
+            if norm:
+                bucket.setdefault(str(key), {}).update(norm)
     return merged
 
 
-# 全局翻译表(模块加载时一次性载入)
-TRANSLATIONS: dict[str, dict[str, str]] = _load_translations()
+# 全局翻译表（模块加载时一次性载入）
+TRANSLATIONS: dict[str, dict[str, dict[str, str]]] = _load_translations()
 
 
-def translate(category: str, key: str, default: str = "") -> str:
-    """通用翻译查找:translate("分类", "键", default="缺省值")。
+def translate(category: str, key: str, default: str = "", lang: str | None = None) -> str:
+    """通用翻译查找：translate("分类", "键", lang="en")。
 
-    - 分类键不存在 → 返回 default(默认空串)
-    - 键不存在 → 返回 default
-    - 命中 → 返回中文
+    查找顺序：指定语言 → 中文 → default。任一步命中即返回。
     """
     if not category or not key:
         return default
+    lang = lang or get_language()
     bucket = TRANSLATIONS.get(category)
     if not bucket:
         return default
-    return bucket.get(key, default)
+    entry = bucket.get(key)
+    if not entry:
+        return default
+    return entry.get(lang) or entry.get("zh") or default
 
 
-def translate_pair(category: str, key: str) -> str:
-    """通用「英文（中文）」拼接。命中且有 zh 才走 zh_pair 风格，否则只回 key。
+def translate_pair(category: str, key: str, lang: str | None = None) -> str:
+    """通用「英文标识（说明）」拼接，说明随当前语言变化。
 
-    与之前 zh_pair(英文, 中文) 用法等价，但只要给「分类+键」就能直接拿到字符串。
+    例：中文 → "IMAGE_FILE_MACHINE_AMD64（x64 64 位）"
+        英文 → "IMAGE_FILE_MACHINE_AMD64 (x64 (64-bit))"
     """
     if not key:
         return ""
-    zh = translate(category, key)
-    return f"{key}（{zh}）" if zh else key
+    lang = lang or get_language()
+    text = translate(category, key, lang=lang)
+    if not text:
+        return key
+    left, right = ("（", "）") if lang == "zh" else (" (", ")")
+    return f"{key}{left}{text}{right}"
 
 
 def zh_pair(english: str, chinese: str) -> str:
     """把英文标识与中文说明拼成「英文（中文）」；没有中文时只返回英文。
 
-    保留该函数仅为向后兼容（老代码/report_exporter 用鸭子类型调用），
-    新代码请直接用 translate_pair("分类", key)。
+    保留该函数仅为向后兼容（老代码用鸭子类型调用）；
+    新代码请直接用 translate_pair("分类", key, lang=...)。
     """
     english = english or ""
     chinese = chinese or ""
@@ -184,6 +265,7 @@ class ImportSymbol:
 class ImportDLL:
     dll: str
     symbols: list[ImportSymbol] = field(default_factory=list)
+    meaning: str = ""           # DLL 用途说明（来自 assets/dll_meanings.json，可能为空）
 
 
 @dataclass
@@ -202,19 +284,49 @@ class SectionInfo:
     entropy: float
     characteristics: int
     perms: str                  # 缩写如 "CODEXR"
-    perms_zh: str               # 中文含义如 "代码·可执行·可读"
+    perms_zh: str               # 权限含义（随当前语言，如 "代码·可执行·可读"）
     is_suspicious: bool         # entropy > ENTROPY_WARN
     entropy_sampled: bool = False  # True = 该熵值是采样估算（节区过大，非全量）
 
 
 @dataclass
 class RiskyImport:
-    """高危 API 导入：分类、风险等级、简要说明。"""
+    """高危 API 导入：分类、风险等级、简要说明。
+
+    注意：``category`` 与 ``risk_level`` 是**数据值**（恒为中文），
+    展示层用 translate("RISK_CATEGORY", ...) / i18n t("risk.<等级>") 翻译。
+    """
     dll: str
     function: str
-    category: str               # 如 "进程注入" / "网络"
-    risk_level: str             # "严重" / "中等" / "低"
+    category: str               # 如 "进程注入" / "网络"（数据值，不翻译）
+    risk_level: str             # "严重" / "中等" / "低"（数据值，不翻译）
     description: str            # 中文说明
+
+
+@dataclass
+class PackerHit:
+    """命中的打包器特征。``name`` 是品牌名（不翻译），证据分节区与字符串两类。"""
+    name: str
+    sections: list[str] = field(default_factory=list)   # 命中的节区名
+    strings: list[str] = field(default_factory=list)     # 命中的特征字符串
+
+
+# 签名状态取值
+SIG_NONE = "none"
+SIG_VALID = "valid"
+SIG_INVALID = "invalid"
+SIG_UNKNOWN = "unknown"
+
+
+@dataclass
+class SignatureInfo:
+    """数字签名信息。status 取值见 SIG_* 常量。"""
+    present: bool = False
+    status: str = SIG_NONE
+    signer: str = ""
+    issuer: str = ""
+    detail: str = ""            # 失败原因 / 错误码
+    size: int = 0               # 签名数据大小（字节）
 
 
 @dataclass
@@ -226,10 +338,10 @@ class PeReport:
     bits: int
     machine: int
     machine_name: str
-    machine_zh: str              # 架构中文说明，如 "x64 64 位"（未收录则空串）
+    machine_zh: str              # 架构说明（随当前语言）
     subsystem: int
     subsystem_name: str
-    subsystem_zh: str            # 子系统中文说明，如 "Windows 图形界面程序"
+    subsystem_zh: str            # 子系统说明（随当前语言）
     time_date_stamp: int
     compile_time_text: str
     time_in_future: bool
@@ -245,10 +357,14 @@ class PeReport:
     strings_summary: dict = field(default_factory=dict)  # extract_strings 完整结果（含来源/失败原因）
     string_count: int = 0                                # 合并去重后的字符串总数
     string_classes: dict = field(default_factory=dict)   # classify_strings 分类结果
+    packers: list[PackerHit] = field(default_factory=list)  # 命中的打包器特征
+    signature: SignatureInfo = field(default_factory=SignatureInfo)  # 数字签名
     has_imports: bool = False
     has_exports: bool = False
     has_risky_imports: bool = False
+    has_packers: bool = False
     suspicious_sections: bool = False
+    lang: str = "zh"             # 生成本报告时使用的语言
     warnings: list[str] = field(default_factory=list)
 
 
@@ -261,29 +377,33 @@ def human_size(n: int) -> str:
         return f"{n} B"
     if n < 1024 * 1024:
         return f"{n / 1024:.1f} KB"
-    return f"{n / 1024 / 1024:.1f} MB"
+    if n < 1024 * 1024 * 1024:
+        return f"{n / 1024 / 1024:.1f} MB"
+    return f"{n / 1024 / 1024 / 1024:.2f} GB"
 
 
 def _is_future(stamp: int) -> bool:
+    """判断时间戳是否晚于当前时间（含同年内未来日期，不只看年份）。"""
     if not stamp:
         return False
     try:
         dt = datetime.datetime.fromtimestamp(stamp, tz=datetime.timezone.utc)
     except (OverflowError, OSError, ValueError):
         return False
-    return dt.year > datetime.datetime.now(datetime.timezone.utc).year
+    return dt > datetime.datetime.now(datetime.timezone.utc)
 
 
-def fmt_time(stamp: int) -> str:
+def fmt_time(stamp: int, lang: str | None = None) -> str:
+    lang = lang or get_language()
     if not stamp:
-        return "(未设置)"
+        return t("time.unset", lang=lang)
     try:
         dt = datetime.datetime.fromtimestamp(stamp, tz=datetime.timezone.utc)
     except (OverflowError, OSError, ValueError):
-        return f"(异常值 {stamp})"
+        return t("time.invalid", lang=lang, stamp=stamp)
     text = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
     if _is_future(stamp):
-        text += "  [!] 时间戳位于未来，可能被篡改"
+        text += t("time.future_suffix", lang=lang)
     return text
 
 
@@ -291,17 +411,17 @@ def section_perms(ch: int) -> str:
     return "".join(name for bit, name in SECTION_FLAGS if ch & bit) or "-"
 
 
-def perms_to_zh(perms: str) -> str:
-    """把权限缩写翻译为中文含义，例如 "CODEXR" → "代码·可执行·可读"。
+def perms_to_zh(perms: str, lang: str | None = None) -> str:
+    """把权限缩写翻译为含义文本，例如 "CODEXR" → "代码·可执行·可读"。
 
     按最长优先匹配多字符代码（UDATA 5 > IDATA 5 > CODE 4 > X/R/W 1）。
-    翻译本身走通用 translate("SECTION_FLAGS", code),新增缩写只需往
-    _BUILTIN_TRANSLATIONS["SECTION_FLAGS"] 加条目。
+    翻译走通用 translate("SECTION_FLAGS", code, lang=lang)。
     """
     if not perms or perms == "-":
         return "-"
-    # 按字符长度从长到短排序（UDATA/IDATA 5 > CODE 4 > X/R/W 1），保证贪婪匹配
+    lang = lang or get_language()
     bucket = TRANSLATIONS.get("SECTION_FLAGS", {})
+    # 按字符长度从长到短排序（UDATA/IDATA 5 > CODE 4 > X/R/W 1），保证贪婪匹配
     codes_by_len = sorted(bucket.keys(), key=len, reverse=True)
     parts: list[str] = []
     remaining = perms
@@ -309,7 +429,7 @@ def perms_to_zh(perms: str) -> str:
         matched = False
         for code in codes_by_len:
             if remaining.startswith(code):
-                parts.append(bucket[code])
+                parts.append(translate("SECTION_FLAGS", code, default=code, lang=lang))
                 remaining = remaining[len(code):]
                 matched = True
                 break
@@ -520,25 +640,74 @@ RISK_DICT_PATH = Path(__file__).resolve().parent.parent / "assets" / "high_risk_
 def _load_high_risk_apis() -> dict[str, tuple[str, str, str]]:
     """从 assets/high_risk_apis.json 加载高危 API 词典。
 
-    外置的目的：让用户能自行编辑/扩充词条，不必改动 Python 代码。
-    加载失败（文件缺失、格式错误）时回退到内置条目，保证功能不残废。
+    加载失败时**记录告警并回退内置**（不再静默 pass）。
     """
     try:
         with RISK_DICT_PATH.open(encoding="utf-8") as fh:
             raw = json.load(fh)
-        loaded: dict[str, tuple[str, str, str]] = {}
+    except FileNotFoundError:
+        return dict(_BUILTIN_HIGH_RISK_APIS)
+    except (OSError, json.JSONDecodeError) as exc:
+        _LOAD_WARNINGS.append(("warn.risk_load_failed", {"err": exc}))
+        return dict(_BUILTIN_HIGH_RISK_APIS)
+
+    loaded: dict[str, tuple[str, str, str]] = {}
+    if isinstance(raw, dict):
         for key, val in raw.items():
             if isinstance(val, (list, tuple)) and len(val) == 3:
                 loaded[str(key).lower()] = (str(val[0]), str(val[1]), str(val[2]))
-        if loaded:
-            return loaded
-    except Exception:  # noqa: BLE001
-        pass
+    if loaded:
+        return loaded
     return dict(_BUILTIN_HIGH_RISK_APIS)
 
 
 # 实际生效的词典（外部 JSON 优先，内置条目兜底）
 HIGH_RISK_APIS: dict[str, tuple[str, str, str]] = _load_high_risk_apis()
+
+
+# --------------------------------------------------------------------------
+# DLL 用途说明词典
+# --------------------------------------------------------------------------
+
+DLL_MEANINGS_PATH = Path(__file__).resolve().parent.parent / "assets" / "dll_meanings.json"
+
+# 内置为空（说明性数据纯外置）；加载失败时仅记录告警
+_BUILTIN_DLL_MEANINGS: dict[str, str] = {}
+
+
+def _load_dll_meanings() -> dict[str, str]:
+    """从 assets/dll_meanings.json 加载 DLL 用途说明词典（key 统一小写）。"""
+    try:
+        with DLL_MEANINGS_PATH.open(encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except FileNotFoundError:
+        return dict(_BUILTIN_DLL_MEANINGS)
+    except (OSError, json.JSONDecodeError) as exc:
+        _LOAD_WARNINGS.append(("warn.dll_load_failed", {"err": exc}))
+        return dict(_BUILTIN_DLL_MEANINGS)
+
+    if not isinstance(raw, dict):
+        _LOAD_WARNINGS.append(("warn.dll_bad_root", {}))
+        return dict(_BUILTIN_DLL_MEANINGS)
+
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        k = str(key).strip().lower()
+        if not k or k.startswith("_"):
+            continue
+        if isinstance(value, str) and value:
+            out[k] = value
+    return out or dict(_BUILTIN_DLL_MEANINGS)
+
+
+DLL_MEANINGS: dict[str, str] = _load_dll_meanings()
+
+
+def dll_meaning(name: str) -> str:
+    """查 DLL 用途说明；未收录返回空串。名称统一小写、去空白后匹配。"""
+    if not name:
+        return ""
+    return DLL_MEANINGS.get(name.strip().lower(), "")
 
 
 def _scan_risky_imports(imports: list[ImportDLL]) -> list[RiskyImport]:
@@ -561,27 +730,421 @@ def _scan_risky_imports(imports: list[ImportDLL]) -> list[RiskyImport]:
 
 
 # --------------------------------------------------------------------------
+# 打包器识别
+# --------------------------------------------------------------------------
+
+# (打包器名, 节区名特征(小写/前缀匹配), 特征字符串(小写/子串匹配))
+_PACKER_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    ("UPX",         ("upx0", "upx1", "upx2"), ("upx!", "upx0", "upx1")),
+    ("PyInstaller", ("pyi-",), ("pyi-", "pyinstaller", "_meipass", "pyz-00.pyz", "pyiboot")),
+    ("Nuitka",      ("nuitka",), ("__nuitka", "nuitka-onefile", "nuitka-python", "nuitka_onefile")),
+    ("VMProtect",   (".vmp0", ".vmp1", ".vmp2", ".vmp"), ("vmprotect", ".vmp0", ".vmp1")),
+    ("Themida",     (".themida", ".winlice"), ("themida", "winlicense")),
+    ("ASPack",      (".aspack", ".adata"), ("aspack",)),
+    ("MPRESS",      (".mpress1", ".mpress2"), ("mpress1", "mpress2")),
+    ("PECompact",   ("pec1", "pec2", "pec3"), ("pecompact",)),
+    ("Enigma",      (".enigma1", ".enigma2"), ("enigma prot",)),
+    ("WinUpack",    (".upack",), (".upack",)),
+)
+
+
+def detect_packers(section_names: list[str], strings: list[str]) -> list[PackerHit]:
+    """根据节区名与特征字符串识别打包器。
+
+    - 节区名：全等或前缀匹配（如 ``.vmp0``）
+    - 字符串：子串匹配；只扫描前 PACKER_SCAN_LIMIT 条，避免超大样本卡顿
+    """
+    sec_lower = [s.strip().lower() for s in (section_names or []) if s and s.strip()]
+
+    scan: set[str] = set()
+    for s in (strings or [])[:PACKER_SCAN_LIMIT]:
+        if s:
+            sl = s.strip().lower()
+            if sl:
+                scan.add(sl)
+
+    hits: list[PackerHit] = []
+    for name, sec_keys, str_keys in _PACKER_SIGNATURES:
+        sec_hits: list[str] = []
+        for key in sec_keys:
+            for actual in sec_lower:
+                if (actual == key or actual.startswith(key)) and actual not in sec_hits:
+                    sec_hits.append(actual)
+        str_hits: list[str] = []
+        for key in str_keys:
+            if any(key in s for s in scan) and key not in str_hits:
+                str_hits.append(key)
+        if sec_hits or str_hits:
+            hits.append(PackerHit(name=name, sections=sec_hits, strings=str_hits))
+    return hits
+
+
+# --------------------------------------------------------------------------
+# 数字签名校验（Windows Authenticode）
+# --------------------------------------------------------------------------
+
+def _security_dir_range(pe) -> tuple[int, int]:
+    """返回签名目录的 (文件偏移, 大小)；无签名返回 (0, 0)。
+
+    注意：IMAGE_DIRECTORY_ENTRY_SECURITY 的 VirtualAddress 是**文件偏移**而非 RVA。
+    """
+    try:
+        idx = pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_SECURITY"]
+        dd = pe.OPTIONAL_HEADER.DATA_DIRECTORY[idx]
+        offset, size = int(dd.VirtualAddress), int(dd.Size)
+        if offset > 0 and size > 0:
+            return offset, size
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        pass
+    return 0, 0
+
+
+def _read_signature_blob(pe, path: str, offset: int, size: int) -> bytes | None:
+    """读取 PKCS#7 签名数据（跳过 8 字节 WIN_CERTIFICATE 头）。失败返回 None。"""
+    raw: bytes | None = None
+    try:
+        data = getattr(pe, "__data__", None)
+        if isinstance(data, (bytes, bytearray)) and offset + 8 <= len(data):
+            raw = bytes(data[offset:offset + size])
+    except (TypeError, ValueError):
+        raw = None
+    if raw is None:
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(offset)
+                raw = fh.read(size)
+        except (OSError, ValueError):
+            return None
+    if not raw or len(raw) < 8:
+        return None
+    try:
+        length, _revision, _ctype = struct.unpack_from("<IHH", raw, 0)
+    except struct.error:
+        return None
+    if length < 8 or length > len(raw):
+        length = len(raw)
+    blob = raw[8:length]
+    return blob or None
+
+
+def _win_verify_file(path: str) -> tuple[str, str]:
+    """用 Windows WinVerifyTrust 校验文件签名，返回 (status, detail)。
+
+    - status: SIG_VALID / SIG_INVALID / SIG_UNKNOWN
+    - detail: 附加说明（错误码等）
+
+    本函数只**读取**文件做密码学校验，绝不加载或执行样本；
+    强制 `WTD_CACHE_ONLY_URL_RETRIEVAL`，不联网取 CRL/OCSP。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception as exc:  # noqa: BLE001
+        return SIG_UNKNOWN, f"ctypes 不可用：{exc}"
+
+    if not hasattr(ctypes, "windll"):
+        return SIG_UNKNOWN, "非 Windows 环境"
+
+    class _GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", wintypes.DWORD),
+            ("Data2", wintypes.WORD),
+            ("Data3", wintypes.WORD),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    class _WINTRUST_FILE_INFO(ctypes.Structure):
+        _fields_ = [
+            ("cbStruct", wintypes.DWORD),
+            ("pcwszFilePath", wintypes.LPCWSTR),
+            ("hFile", wintypes.HANDLE),
+            ("pgKnownSubject", ctypes.POINTER(_GUID)),
+        ]
+
+    class _WINTRUST_DATA(ctypes.Structure):
+        _fields_ = [
+            ("cbStruct", wintypes.DWORD),
+            ("pPolicyCallbackData", ctypes.c_void_p),
+            ("pSIPClientData", ctypes.c_void_p),
+            ("dwUIChoice", wintypes.DWORD),
+            ("fdwRevocationChecks", wintypes.DWORD),
+            ("dwUnionChoice", wintypes.DWORD),
+            ("pFile", ctypes.POINTER(_WINTRUST_FILE_INFO)),
+            ("dwStateAction", wintypes.DWORD),
+            ("hWVTStateData", wintypes.HANDLE),
+            ("pwszURLReference", wintypes.LPWSTR),
+            ("dwProvFlags", wintypes.DWORD),
+            ("dwUIContext", wintypes.DWORD),
+            ("pSignatureSettings", ctypes.c_void_p),
+        ]
+
+    wtd_ui_none = 2
+    wtd_revoke_none = 0
+    wtd_choice_file = 1
+    wtd_state_verify = 1
+    wtd_state_close = 2
+    wtd_cache_only = 0x00001000   # 仅用本地缓存，避免联网
+
+    action = _GUID(0x00AAC56B, 0xCD44, 0x11D0,
+                   (ctypes.c_ubyte * 8)(0x8C, 0xC2, 0x00, 0xC0, 0x4F, 0xC2, 0x95, 0xEE))
+
+    file_info = _WINTRUST_FILE_INFO()
+    file_info.cbStruct = ctypes.sizeof(_WINTRUST_FILE_INFO)
+    file_info.pcwszFilePath = str(path)
+    file_info.hFile = None
+    file_info.pgKnownSubject = None
+
+    data = _WINTRUST_DATA()
+    data.cbStruct = ctypes.sizeof(_WINTRUST_DATA)
+    data.pPolicyCallbackData = None
+    data.pSIPClientData = None
+    data.dwUIChoice = wtd_ui_none
+    data.fdwRevocationChecks = wtd_revoke_none
+    data.dwUnionChoice = wtd_choice_file
+    data.pFile = ctypes.pointer(file_info)
+    data.dwStateAction = wtd_state_verify
+    data.hWVTStateData = None
+    data.pwszURLReference = None
+    data.dwProvFlags = wtd_cache_only
+    data.dwUIContext = 0
+    data.pSignatureSettings = None
+
+    try:
+        wintrust = ctypes.WinDLL("wintrust.dll")
+        fn = wintrust.WinVerifyTrust
+        fn.argtypes = [wintypes.HWND, ctypes.POINTER(_GUID), ctypes.c_void_p]
+        fn.restype = ctypes.c_long
+    except (OSError, AttributeError) as exc:
+        return SIG_UNKNOWN, f"无法加载 wintrust.dll：{exc}"
+
+    try:
+        result = fn(None, ctypes.byref(action), ctypes.byref(data))
+    except Exception as exc:  # noqa: BLE001
+        return SIG_UNKNOWN, f"WinVerifyTrust 调用失败：{exc}"
+    finally:
+        # 释放校验状态数据，避免句柄泄漏
+        try:
+            data.dwStateAction = wtd_state_close
+            fn(None, ctypes.byref(action), ctypes.byref(data))
+        except Exception:  # noqa: BLE001
+            pass
+
+    code = int(ctypes.c_long(result).value)
+    if code == 0:
+        return SIG_VALID, ""
+    return SIG_INVALID, f"0x{code & 0xFFFFFFFF:08X}"
+
+
+def _win_extract_signer(sig_bytes: bytes) -> tuple[str, str]:
+    """从 PKCS#7 签名数据中提取 (签名者, 颁发者) 的显示名。失败返回空串。
+
+    用 CryptQueryObject 解析签名，枚举证书取显示名（签名者证书通常排在最前）。
+    """
+    if not sig_bytes:
+        return "", ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:  # noqa: BLE001
+        return "", ""
+    if not hasattr(ctypes, "windll"):
+        return "", ""
+
+    class _CRYPT_DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD),
+                    ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
+
+    class _CRYPT_ALGORITHM_IDENTIFIER(ctypes.Structure):
+        _fields_ = [("pszObjId", ctypes.c_char_p),
+                    ("Parameters", _CRYPT_DATA_BLOB)]
+
+    class _FILETIME(ctypes.Structure):
+        _fields_ = [("dwLowDateTime", wintypes.DWORD),
+                    ("dwHighDateTime", wintypes.DWORD)]
+
+    class _CMSG_SIGNER_INFO(ctypes.Structure):
+        # 只声明到 SerialNumber（后续字段 CertFindCertificateInStore 用不到）
+        _fields_ = [("dwVersion", wintypes.DWORD),
+                    ("Issuer", _CRYPT_DATA_BLOB),
+                    ("SerialNumber", _CRYPT_DATA_BLOB)]
+
+    class _CERT_INFO(ctypes.Structure):
+        # 部分布局：CertFindCertificateInStore(CERT_FIND_SUBJECT_CERT) 只用 Issuer + SerialNumber
+        _fields_ = [("dwVersion", wintypes.DWORD),
+                    ("SerialNumber", _CRYPT_DATA_BLOB),
+                    ("SignatureAlgorithm", _CRYPT_ALGORITHM_IDENTIFIER),
+                    ("Issuer", _CRYPT_DATA_BLOB),
+                    ("NotBefore", _FILETIME),
+                    ("NotAfter", _FILETIME),
+                    ("Subject", _CRYPT_DATA_BLOB)]
+
+    cert_query_object_blob = 2
+    cert_query_content_flag_all = 0x3FFE
+    cert_query_format_flag_all = 0x0000000E
+    cert_name_simple_display_type = 4
+
+    buf = (ctypes.c_ubyte * len(sig_bytes)).from_buffer_copy(sig_bytes)
+    blob = _CRYPT_DATA_BLOB(len(sig_bytes), ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte)))
+
+    try:
+        crypt32 = ctypes.WinDLL("crypt32.dll")
+    except OSError:
+        return "", ""
+
+    CryptQueryObject = crypt32.CryptQueryObject
+    CryptQueryObject.argtypes = [
+        wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.HANDLE),
+        ctypes.POINTER(wintypes.HANDLE), ctypes.POINTER(ctypes.c_void_p),
+    ]
+    CryptQueryObject.restype = wintypes.BOOL
+
+    encoding = wintypes.DWORD()
+    content_type = wintypes.DWORD()
+    format_type = wintypes.DWORD()
+    h_store = wintypes.HANDLE()
+    h_msg = wintypes.HANDLE()
+    p_context = ctypes.c_void_p()
+
+    ok = CryptQueryObject(
+        cert_query_object_blob, ctypes.byref(blob),
+        cert_query_content_flag_all, cert_query_format_flag_all, 0,
+        ctypes.byref(encoding), ctypes.byref(content_type), ctypes.byref(format_type),
+        ctypes.byref(h_store), ctypes.byref(h_msg), ctypes.byref(p_context),
+    )
+    if not ok or not h_store:
+        return "", ""
+
+    signer, issuer = "", ""
+    try:
+        CertGetNameStringW = crypt32.CertGetNameStringW
+        CertGetNameStringW.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                       ctypes.c_void_p, wintypes.LPWSTR, wintypes.DWORD]
+        CertGetNameStringW.restype = wintypes.DWORD
+
+        def _cert_name(cert_ctx, issuer_flag: int = 0) -> str:
+            """取证书显示名；issuer_flag=1 时取颁发者名（CERT_NAME_ISSUER_FLAG）。"""
+            need = CertGetNameStringW(cert_ctx, cert_name_simple_display_type,
+                                      issuer_flag, None, None, 0)
+            if need <= 1:
+                return ""
+            name_buf = ctypes.create_unicode_buffer(need)
+            CertGetNameStringW(cert_ctx, cert_name_simple_display_type,
+                               issuer_flag, None, name_buf, need)
+            return name_buf.value or ""
+
+        # 优先用 CMSG_SIGNER_INFO 精确定位"叶证书"（签名者），避免取到中间 CA
+        leaf_ctx = None
+        if h_msg:
+            try:
+                CryptMsgGetParam = crypt32.CryptMsgGetParam
+                CryptMsgGetParam.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
+                                             ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
+                CryptMsgGetParam.restype = wintypes.BOOL
+                cmsg_signer_info_param = 6
+                need_size = wintypes.DWORD()
+                if (CryptMsgGetParam(h_msg, cmsg_signer_info_param, 0, None, ctypes.byref(need_size))
+                        and need_size.value):
+                    info_buf = (ctypes.c_ubyte * need_size.value)()
+                    if CryptMsgGetParam(h_msg, cmsg_signer_info_param, 0, info_buf,
+                                        ctypes.byref(need_size)):
+                        signer_info = _CMSG_SIGNER_INFO.from_buffer(info_buf)
+                        cert_info = _CERT_INFO()
+                        cert_info.dwVersion = 0
+                        cert_info.SerialNumber = signer_info.SerialNumber
+                        cert_info.Issuer = signer_info.Issuer
+                        CertFindCertificateInStore = crypt32.CertFindCertificateInStore
+                        CertFindCertificateInStore.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                                               wintypes.DWORD, wintypes.DWORD,
+                                                               ctypes.c_void_p, ctypes.c_void_p]
+                        CertFindCertificateInStore.restype = ctypes.c_void_p
+                        x509_pkcs7 = 0x00010001          # X509_ASN_ENCODING | PKCS_7_ASN_ENCODING
+                        cert_find_subject_cert = 0x000B0000
+                        leaf_ctx = CertFindCertificateInStore(
+                            h_store, x509_pkcs7, 0, cert_find_subject_cert,
+                            ctypes.byref(cert_info), None)
+            except Exception:  # noqa: BLE001
+                leaf_ctx = None
+
+        cert_name_issuer_flag = 0x1
+        if leaf_ctx:
+            signer = _cert_name(leaf_ctx, 0)
+            issuer = _cert_name(leaf_ctx, cert_name_issuer_flag)
+        if not signer:
+            # 回退：枚举证书存储，取第一个作为签名者
+            CertEnumCertificatesInStore = crypt32.CertEnumCertificatesInStore
+            CertEnumCertificatesInStore.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+            CertEnumCertificatesInStore.restype = ctypes.c_void_p
+            cert = CertEnumCertificatesInStore(h_store, None)
+            count = 0
+            while cert and count < 6:
+                name = _cert_name(cert, 0)
+                if name and not signer:
+                    signer = name
+                elif name and not issuer:
+                    issuer = name
+                cert = CertEnumCertificatesInStore(h_store, cert)
+                count += 1
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        try:
+            crypt32.CertCloseStore(h_store, 0)
+        except Exception:  # noqa: BLE001
+            pass
+        if h_msg:
+            try:
+                crypt32.CryptMsgClose(h_msg)
+            except Exception:  # noqa: BLE001
+                pass
+    return signer, issuer
+
+
+def check_signature(pe, path: str) -> SignatureInfo:
+    """检查 PE 数字签名。无签名 → present=False；有签名 → 校验有效性并提取签名者。"""
+    offset, size = _security_dir_range(pe)
+    if not offset or not size:
+        return SignatureInfo(present=False, status=SIG_NONE)
+
+    info = SignatureInfo(present=True, status=SIG_UNKNOWN, size=size)
+    status, detail = _win_verify_file(str(path))
+    info.status = status
+    info.detail = detail
+
+    blob = _read_signature_blob(pe, str(path), offset, size)
+    if blob:
+        signer, issuer = _win_extract_signer(blob)
+        info.signer = signer
+        info.issuer = issuer
+    return info
+
+
+# --------------------------------------------------------------------------
 # 解析
 # --------------------------------------------------------------------------
 
-def parse_pe(path) -> PeReport:
+def parse_pe(path, lang: str | None = None) -> PeReport:
     """解析 PE 文件，失败时抛 PeParseError（含中文文案与退出码）。
 
     安全约束（审查项，不可回退）：
     - **无论解析在哪一步失败，都保证 pe.close() 被执行**，句柄不泄漏
     - **所有异常统一翻译为 PeParseError**，避免调用方（CLI/GUI）收到裸 traceback
     - 超过 MAX_FILE_SIZE 的文件直接拒绝，防止恶意大文件耗尽内存
+    - 纯静态：不加载、不执行样本；签名校验只读文件
     """
+    lang = lang or get_language()
     pe = None
     try:
         p = Path(path).expanduser()
         if not p.is_file():
-            raise PeParseError(f"文件不存在：{p}", exit_code=1)
+            raise PeParseError(t("err.not_found", lang=lang, path=p), exit_code=1)
 
         size = p.stat().st_size
         if size > MAX_FILE_SIZE:
             raise PeParseError(
-                f"文件过大（{human_size(size)} > {human_size(MAX_FILE_SIZE)}），已拒绝解析",
+                t("err.too_large", lang=lang, size=human_size(size),
+                  limit=human_size(MAX_FILE_SIZE)),
                 exit_code=1,
             )
 
@@ -592,18 +1155,20 @@ def parse_pe(path) -> PeReport:
                 pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"],
             ]
         )
-        return _build_report(pe, p)
+        return _build_report(pe, p, lang)
     except PeParseError:
         raise
     except pefile.PEFormatError as exc:
-        raise PeParseError(f"不是有效的 PE 文件：{exc}", exit_code=2) from exc
+        raise PeParseError(t("err.not_pe", lang=lang, err=exc), exit_code=2) from exc
     except OSError as exc:
-        raise PeParseError(f"无法读取文件：{exc}", exit_code=1) from exc
+        raise PeParseError(t("err.unreadable", lang=lang, err=exc), exit_code=1) from exc
+    except MemoryError as exc:
+        raise PeParseError(t("err.oom", lang=lang), exit_code=1) from exc
     except Exception as exc:  # noqa: BLE001
         # 畸形 PE 会触发 pefile 内部各种异常（struct.error / ValueError 等），
         # 统一兜住，绝不裸抛给调用方——CLI 会 traceback，GUI 会闪退。
         raise PeParseError(
-            f"PE 结构异常，解析已中止：{type(exc).__name__}: {exc}", exit_code=2
+            t("err.structure", lang=lang, detail=f"{type(exc).__name__}: {exc}"), exit_code=2
         ) from exc
     finally:
         if pe is not None:
@@ -613,14 +1178,20 @@ def parse_pe(path) -> PeReport:
                 pass
 
 
-def _build_report(pe: pefile.PE, p: Path) -> PeReport:
+def _build_report(pe: pefile.PE, p: Path, lang: str) -> PeReport:
     fh = pe.FILE_HEADER
     oh = pe.OPTIONAL_HEADER
 
     magic = int(oh.Magic)
-    kind = {0x10B: "PE32 (32 位)", 0x20B: "PE32+ (64 位)"}.get(magic, "未知")
+    if magic == 0x20B:
+        kind = t("common.pe32plus", lang=lang)
+    elif magic == 0x10B:
+        kind = t("common.pe32", lang=lang)
+    else:
+        kind = t("common.unknown", lang=lang)
     bits = 64 if magic == 0x20B else 32
     stamp = int(fh.TimeDateStamp)
+    file_size = int(p.stat().st_size)
 
     sections: list[SectionInfo] = []
     for s in pe.sections:
@@ -635,7 +1206,7 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
                 entropy=entropy,
                 characteristics=int(s.Characteristics),
                 perms=perms,
-                perms_zh=perms_to_zh(perms),
+                perms_zh=perms_to_zh(perms, lang=lang),
                 is_suspicious=entropy > ENTROPY_WARN,
                 entropy_sampled=sampled,
             )
@@ -655,7 +1226,7 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
                 )
             else:
                 symbols.append(ImportSymbol(name=None, ordinal=int(imp.ordinal)))
-        imports.append(ImportDLL(dll=dll, symbols=symbols))
+        imports.append(ImportDLL(dll=dll, symbols=symbols, meaning=dll_meaning(dll)))
 
     risky_imports = _scan_risky_imports(imports)
 
@@ -678,29 +1249,38 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
     merged_strings = strings_summary.get("merged", [])
     known_apis = {s.display for d in imports for s in d.symbols}
     known_apis |= {e.name for e in exports if e.name}
-    known_sections = {s.name for s in sections}
+    known_sections = {s.name.strip() for s in sections if s.name}
     string_classes = classify_strings(
         merged_strings, known_apis=known_apis, known_sections=known_sections
     )
 
+    # 打包器识别（用节区名 + 特征字符串）
+    packers = detect_packers([s.name for s in sections], merged_strings)
+
+    # 数字签名校验（只读文件，不执行样本）
+    signature = check_signature(pe, str(p))
+
     warnings: list[str] = []
-    if p.stat().st_size > 200 * 1024 * 1024:
-        warnings.append("文件较大（>200 MB），解析可能耗时较长")
+    # 加载期降级告警（外置词典/翻译表加载失败等）——不再静默
+    for key, kwargs in _LOAD_WARNINGS:
+        warnings.append(t(key, **kwargs))
+    if file_size > 200 * 1024 * 1024:
+        warnings.append(t("warn.large_file"))
 
     return PeReport(
         path=str(p),
-        file_size=int(p.stat().st_size),
+        file_size=file_size,
         magic=magic,
         kind=kind,
         bits=bits,
         machine=int(fh.Machine),
         machine_name=str(pefile.MACHINE_TYPE.get(fh.Machine, hex(fh.Machine))),
-        machine_zh=translate("MACHINE", str(pefile.MACHINE_TYPE.get(fh.Machine, ""))),
+        machine_zh=translate("MACHINE", str(pefile.MACHINE_TYPE.get(fh.Machine, "")), lang=lang),
         subsystem=int(oh.Subsystem),
         subsystem_name=str(pefile.SUBSYSTEM_TYPE.get(oh.Subsystem, str(oh.Subsystem))),
-        subsystem_zh=translate("SUBSYSTEM", str(pefile.SUBSYSTEM_TYPE.get(oh.Subsystem, ""))),
+        subsystem_zh=translate("SUBSYSTEM", str(pefile.SUBSYSTEM_TYPE.get(oh.Subsystem, "")), lang=lang),
         time_date_stamp=stamp,
-        compile_time_text=fmt_time(stamp),
+        compile_time_text=fmt_time(stamp, lang=lang),
         time_in_future=_is_future(stamp),
         entry_point_rva=int(oh.AddressOfEntryPoint),
         image_base=int(oh.ImageBase),
@@ -714,9 +1294,13 @@ def _build_report(pe: pefile.PE, p: Path) -> PeReport:
         strings_summary=strings_summary,
         string_count=len(merged_strings),
         string_classes=string_classes,
+        packers=packers,
+        signature=signature,
         has_imports=bool(imports),
         has_exports=bool(exports),
         has_risky_imports=bool(risky_imports),
+        has_packers=bool(packers),
         suspicious_sections=any(s.is_suspicious for s in sections),
+        lang=lang,
         warnings=warnings,
     )

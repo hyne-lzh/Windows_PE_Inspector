@@ -2,7 +2,7 @@
 
 ![status](https://img.shields.io/badge/status-in%20progress-orange)
 ![python](https://img.shields.io/badge/python-3.12-blue)
-![deps](https://img.shields.io/badge/dependencies-pefile%20%7C%20customtkinter-lightgrey)
+![deps](https://img.shields.io/badge/dependencies-pefile%20%7C%20customtkinter%20%7C%20tkinterdnd2%20%7C%20openpyxl-lightgrey)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 > 一个用 Python 写的 Windows PE 文件静态分析工具：把 exe / dll 丢进来，看清它依赖了什么 DLL、是不是被加壳打包、有没有可疑行为——**全程不运行样本**，纯静态解析。
@@ -21,13 +21,15 @@
 | 高危 API 检测 | 已完成 | 词典外置为 `assets/high_risk_apis.json`（**608 条 / 22 分类**，含内核与驱动层），**已融入导入表按等级着色**：高危红、中危橙、低危黄、安全绿 |
 | 字符串提取 | 已完成 | `strings.exe`（Sysinternals）+ pefile 双重来源，失败自动回退；按 **10 类**分组树状展示（URL / IP / 注册表 / 路径 / PDB / XML / 节区名 / DLL 名称 / API 名称 / 其他），URL 检测**容忍 CRL/OCSP 截断**的行首噪音（s/V/a/3/X 等），长内容支持横向滚动 |
 | 报告导出 | 已完成 | HTML（单文件自包含）与 Excel（多工作表）双格式 |
-| 翻译系统 | 已完成 | 通用翻译表外置（`assets/translations.json`）+ `translate/translate_pair` 通用入口；架构 / 子系统 / 节区权限走同一套翻译，**新增分类只需加 JSON 条目** |
+| 翻译系统 | 已完成 | 通用翻译表外置（`assets/translations.json`，中英双语格式）+ `translate/translate_pair(cat, key, lang)` 通用入口；架构 / 子系统 / 节区权限 / 22 类高危分类走同一套翻译，**新增分类只需加 JSON 条目** |
 | 加壳检测 | 已完成 | 节区熵值超 7.2 自动标红 + 终端提示 |
 | 采样熵 | 已完成 | 节区 > 50 MB 自动改用 4 MB 采样，实测 13x 加速且熵值与全量一致 |
+| DLL 名称含义 | 已完成 | 词典外置 `assets/dll_meanings.json`（**121 条**）；导入表节点、CLI 与报告均显示 DLL 用途 |
+| 中英双语 | 已完成 | 语言包外置 `assets/i18n.json`（157 键）+ `achieve/i18n.py`；GUI 右上角切换、CLI `--lang`、报告导出同步 |
+| 打包器识别 | 已完成 | UPX / PyInstaller / Nuitka / VMProtect（另含 Themida / ASPack / MPRESS / PECompact / Enigma / WinUpack），节区名 + 特征字符串双证据 |
+| 数字签名校验 | 已完成 | Authenticode：`WinVerifyTrust` 判有效性 + 提取签名者/颁发者，无签名优雅降级；**只读文件，不执行样本** |
 | 打包发布 | 规划中 | Nuitka 编译为免安装 exe（脚本就绪，待发布 Release） |
 | DLL 依赖检测 | 规划中 | 检查系统是否存在、位数是否匹配、递归展开依赖树 |
-| 打包器识别 | 规划中 | PyInstaller / Nuitka / UPX / VMProtect |
-| 数字签名校验 | 规划中 | 判断是否为官方原版 |
 | 资源提取 | 规划中 | 图标导出 PNG、版本信息与公司名读取 |
 | 批量扫描 | 规划中 | 整个目录一次分析，风险分级汇总 |
 | 界面增强 | 已完成 | 文件拖拽（tkinterdnd2）、**浏览即解析**、右键菜单复制/复制全部、表格实时搜索、长内容横向滚动 |
@@ -61,12 +63,14 @@
 - [x] 采样熵：超大节区（>50 MB）改用 4 MB 采样，实测 13x 加速
 - [x] 翻译系统：架构 / 子系统英文后接中文；通用翻译表外置为 `assets/translations.json`，新增分类只需加 JSON 条目（`translate(cat, key)` / `translate_pair(cat, key)` 统一入口）
 - [x] 界面增强：文件拖拽（tkinterdnd2）、**浏览即解析**（选中即跑）、右键菜单复制 / 复制全部、表格实时搜索、长内容横向滚动
+- [x] DLL 名称含义：词典外置 `assets/dll_meanings.json`（121 条），导入表 / CLI / 报告显示 DLL 用途
+- [x] 中英双语：语言包外置 `assets/i18n.json`，GUI 右上角切换、CLI `--lang en`、报告同步
+- [x] 打包器识别：UPX / PyInstaller / Nuitka / VMProtect 等，节区名 + 特征字符串双证据
+- [x] 数字签名校验：Authenticode 有效性判定 + 签名者 / 颁发者提取（只读，不执行样本）
 
 ### 规划中
 
 - [ ] DLL 依赖检测：检查系统是否存在、位数是否匹配、递归展开依赖树
-- [ ] 打包器识别：PyInstaller / Nuitka / UPX / VMProtect（本项目自身也用 Nuitka 编译）
-- [ ] 数字签名校验：判断是否为官方原版
 - [ ] 资源提取：图标导出 PNG、版本信息与公司名读取
 - [ ] 批量扫描：整个目录一次分析，风险分级汇总
 - [ ] GitHub Release 发布 Nuitka 编译后的 exe
@@ -78,7 +82,7 @@
 | 语言 | Python 3.12 | 使用 Python 3.12.8 构建环境（**不要用 3.13+**，见编译说明） |
 | PE 解析 | [pefile](https://github.com/erocarrera/pefile) | 成熟的 PE 文件解析库 |
 | 图形界面 | [customtkinter](https://customtkinter.tomschimansky.com/) | 基于 tkinter 的现代化界面库，外观更现代 |
-| 报告导出 | openpyxl | 导出 Excel 汇总表（待引入） |
+| 报告导出 | openpyxl | 导出 Excel 汇总表（多工作表，含打包器 / 签名工作表） |
 | 编译 | [Nuitka](https://nuitka.net/) | 编译为原生机器码，体积更小、启动更快 |
 
 **设计原则：依赖保持精简、精确锁版本，便于分发与编译。**
@@ -106,12 +110,15 @@ Windows_PE_Inspector/
 ├── builds.py              # 全自动编译脚本（环境预检 + 网络诊断 + 测速选后端）
 ├── achieve/               # GUI 与 CLI 共用的实现逻辑（不依赖任何 GUI 库）
 │   ├── __init__.py
-│   ├── pe_parser.py       # 解析核心 + 数据类 + 通用翻译表 + 高危 API 词典
+│   ├── pe_parser.py       # 解析核心 + 数据类 + 打包器识别 + 数字签名 + 翻译表
 │   ├── strings_extractor.py  # strings.exe + pefile 双重来源 + 10 类分类
+│   ├── i18n.py            # 中英双语运行时（t(key, lang=...) 通用入口）
 │   └── report_exporter.py    # HTML / Excel 报告导出（含公式注入/转义防护）
 ├── assets/                # 外置数据词典（用户可自行扩充，无需改代码）
 │   ├── high_risk_apis.json   # 608 条高危 API，按 22 分类 + 严重度分级
-│   └── translations.json     # 通用翻译表（SECTION_FLAGS / MACHINE / SUBSYSTEM / DLL）
+│   ├── dll_meanings.json     # 121 条常见 DLL 用途说明
+│   ├── translations.json     # PE 结构值中英翻译表（含 22 类高危分类英文映射）
+│   └── i18n.json             # 界面文案语言包（157 键 × 中/英）
 ├── ui/                    # GUI 专用
 │   ├── __init__.py
 │   └── gui.py             # customtkinter 主窗口（六页 + 后台线程 + 状态栏）
@@ -121,7 +128,7 @@ Windows_PE_Inspector/
 ├── strings.exe            # Sysinternals Strings v2.54（外部字符串提取工具）
 ├── md/
 │   └── nuitka_install.md  # Nuitka 编译指南
-├── requirements.txt       # 依赖清单（pefile + customtkinter + openpyxl，精确锁版本）
+├── requirements.txt       # 依赖清单（pefile + customtkinter + tkinterdnd2 + openpyxl，精确锁版本）
 ├── LICENSE.txt            # MIT 许可证全文
 ├── .gitignore
 └── README.md
@@ -179,13 +186,23 @@ python builds.py               # 全自动编译（自动测速、择优编译�
 | 阶段 | 内容 | 产出 | 状态 |
 |------|------|------|------|
 | 阶段一 | 环境与仓库初始化 | 虚拟环境、依赖清单、忽略规则 | 已完成 |
-| 阶段二 | 界面框架搭建 | 可启动的主窗口与分区布局 | 规划中 |
-| 阶段三 | 基础信息展示 | 头信息、节区表、导入表可视化 | 规划中 |
-| 阶段四 | 依赖分析 | 缺失 DLL 检测与依赖树 | 规划中 |
-| 阶段五 | 特色功能 | 加壳检测、打包器识别、高危 API 标记 | 规划中 |
-| 阶段六 | 报告与发布 | 报告导出、Nuitka 编译为 exe | 规划中 |
+| 阶段二 | 界面框架搭建 | 可启动的主窗口与分区布局 | 已完成 |
+| 阶段三 | 基础信息展示 | 头信息、节区表、导入表可视化 | 已完成 |
+| 阶段四 | 特色功能 | 加壳检测、打包器识别、数字签名、高危 API 标记 | 已完成 |
+| 阶段五 | 报告与双语 | 报告导出（HTML/Excel）、中英双语切换 | 已完成 |
+| 阶段六 | 依赖分析与发布 | 缺失 DLL 检测与依赖树、Nuitka 发布 Release | 规划中 |
 
 ## 更新日志
+
+### 2026-10-11
+
+- **新增 DLL 名称含义**：词典外置 `assets/dll_meanings.json`（121 条常见的系统 / 运行时 / 图形 / 网络 / .NET DLL），导入表 DLL 节点、CLI 与报告均显示用途说明
+- **新增中英双语**：新模块 `achieve/i18n.py` + 语言包 `assets/i18n.json`（157 键）；GUI 工具栏新增「中文 / English」切换（切语言自动重解析），CLI 新增 `--lang`，HTML / Excel 报告同步双语；`translations.json` 升级为双语格式并新增 22 类高危分类英文映射
+- **新增打包器识别**：UPX / PyInstaller / Nuitka / VMProtect（另含 Themida / ASPack / MPRESS / PECompact / Enigma / WinUpack），按**节区名 + 特征字符串**双证据判定
+- **新增数字签名校验**：Windows `WinVerifyTrust` 判有效性，`CryptQueryObject` + `CryptMsgGetParam` 精确提取签名者叶证书与颁发者；无签名 / 非 Windows 优雅降级；强制**离线校验**（不联网取 CRL/OCSP）
+- **修复静默吞异常**：外置词典 / 翻译表加载失败不再 `pass`，转为写入报告 `warnings`，用户可感知自定义词条未生效
+- **修正命名不一致**：CLI 入口文件由 `cmdmain.py` 规范化为 `cmd_main.py`（与 README 一致）
+- **细节修复**：`human_size` 补 GB 档、`_is_future` 改为精确时间比较（不再只比年份）、Excel 公式中和收窄为仅 `=` 开头（避免 `-` 开头文本被误加引号）、HTML 基本信息不再误转义（修 Excel 显示 `&amp;` 的问题）
 
 ### 2026-10-06
 
