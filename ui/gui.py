@@ -26,7 +26,17 @@ from tkinter import filedialog, messagebox, ttk
 from typing import NamedTuple
 
 import customtkinter as ctk
-from tkinterdnd2 import DND_FILES, TkinterDnD
+
+# P1-5：tkinterdnd2 缺失时不应导致整个程序 ImportError 崩溃（打包成无控制台 exe
+# 会表现为"双击无反应"）。这里包 try/except，缺失时降级为"无拖放"，
+# 由 _enable_drop_target 反映到 UI；customtkinter 为硬依赖，缺失才真无法启动。
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    _HAS_TKDND = True
+except ImportError:  # pragma: no cover - 环境缺包时的降级路径
+    DND_FILES = None  # type: ignore
+    TkinterDnD = None  # type: ignore
+    _HAS_TKDND = False
 
 from achieve import i18n
 from achieve.i18n import t
@@ -235,8 +245,16 @@ def apply_treeview_theme(style: ttk.Style) -> None:
 # 主窗口
 # --------------------------------------------------------------------------
 
-class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
-    """应用主窗口（同时是 tkinterdnd2 的拖放目标）。"""
+# P1-5：tkinterdnd2 可用时继承其 DnDWrapper 以获得拖放能力；
+# 缺失时退化为纯 CTk 窗口（无拖放，其余功能不受影响）。
+if _HAS_TKDND:
+    _MainWindowBase = (ctk.CTk, TkinterDnD.DnDWrapper)
+else:  # pragma: no cover - 环境缺包时的降级路径
+    _MainWindowBase = (ctk.CTk,)
+
+
+class MainWindow(*_MainWindowBase):
+    """应用主窗口（tkinterdnd2 可用时同时是拖放目标）。"""
 
     def __init__(self) -> None:
         ctk.set_appearance_mode("system")
@@ -261,6 +279,9 @@ class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
         # 线程与队列（契约见模块 docstring）
         self._queue: queue.Queue = queue.Queue()
         self._worker: threading.Thread | None = None
+        # P1-4：并发"代际"标识。每次发起解析自增，消息携带代次，
+        # _poll 只消费当前代次，避免快速连点时旧链清掉新 worker / 渲染旧数据。
+        self._generation = 0
         # 最近一次解析成功的报告（供「导出报告」使用）
         self._report = None
 
@@ -372,7 +393,13 @@ class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
     # ------------------------------------------------------------ 拖放
 
     def _enable_drop_target(self) -> bool:
-        """把主窗口注册为文件拖放目标。成功返回 True。"""
+        """把主窗口注册为文件拖放目标。成功返回 True。
+
+        P1-5：tkinterdnd2 未安装（``_HAS_TKDND`` 为 False）时直接返回 False，
+        不尝试调用其 API，也不拖累主程序启动。
+        """
+        if not _HAS_TKDND:
+            return False
         try:
             self.TkdndVersion = TkinterDnD._require(self)
             self.drop_target_register(DND_FILES)
@@ -465,35 +492,60 @@ class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
         self.set_status(t("status.parsing"), "busy")
         self.progress.start()
 
-        self._worker = threading.Thread(target=self._run_parse, args=(path,), daemon=True)
+        # P1-4：递增代次并绑定到本次 worker；消息与代次一同回传。
+        self._generation += 1
+        gen = self._generation
+        self._worker = threading.Thread(
+            target=self._run_parse, args=(path, gen), daemon=True)
         self._worker.start()
-        self.after(100, self._poll)
+        self.after(100, lambda: self._poll(gen))
 
     # ------------------------------------------------------------ 线程契约
 
-    def _run_parse(self, path: str) -> None:
-        """后台线程体：解析 PE 并回传结果。绝不触碰任何 widget。"""
+    def _run_parse(self, path: str, gen: int) -> None:
+        """后台线程体：解析 PE 并回传结果。绝不触碰任何 widget。
+
+        P1-4：消息携带发起时的代次 ``gen``，主线程据此丢弃过期结果。
+        """
         try:
             report = parse_pe(path, lang=i18n.get_language())
-            self._queue.put(("ok", report))
+            self._queue.put((gen, "ok", report))
         except PeParseError as exc:
-            self._queue.put(("err", str(exc)))
+            self._queue.put((gen, "err", str(exc)))
         except Exception as exc:  # noqa: BLE001
-            self._queue.put(("err", f"{type(exc).__name__}: {exc}"))
+            # P2-5：未预期异常也要落盘，避免堆栈丢失
+            _log_exception(type(exc), exc, exc.__traceback__)
+            self._queue.put((gen, "err", f"{type(exc).__name__}: {exc}"))
 
-    def _poll(self) -> None:
-        try:
-            kind, payload = self._queue.get_nowait()
-        except queue.Empty:
-            worker = self._worker
-            if worker is not None and not worker.is_alive():
-                self._finish_busy()
-                self.set_status(t("status.thread_dead"), "error")
-                return
-            self.after(100, self._poll)
+    def _poll(self, gen: int) -> None:
+        # P1-4：本次轮询链只服务自己那一代；若已有更新的解析发起，直接退场，
+        # 避免旧链误清新 worker / 覆盖新结果。
+        if gen != self._generation:
             return
 
-        self._finish_busy()
+        try:
+            msg_gen, kind, payload = self._queue.get_nowait()
+        except queue.Empty:
+            # P1-3：判定"线程异常退出"前必须再取一次队列 —— 工作线程可能在
+            # get_nowait 抛 Empty 与 is_alive 检查之间完成 put 并退出，
+            # 此时只检查 is_alive 会误判异常退出、永久丢失结果。
+            try:
+                msg_gen, kind, payload = self._queue.get_nowait()
+            except queue.Empty:
+                worker = self._worker
+                if worker is not None and not worker.is_alive():
+                    self._finish_busy(gen)
+                    self.set_status(t("status.thread_dead"), "error")
+                    return
+                self.after(100, lambda: self._poll(gen))
+                return
+
+        # 过期代次的消息直接丢弃，并继续监听当前代次
+        if msg_gen != gen:
+            self.after(100, lambda: self._poll(gen))
+            return
+
+        self._finish_busy(gen)
         if kind == "ok":
             # 记住报告，供「导出报告」按钮使用
             self._report = payload
@@ -516,7 +568,10 @@ class MainWindow(ctk.CTk, TkinterDnD.DnDWrapper):
             except Exception:
                 pass
 
-    def _finish_busy(self) -> None:
+    def _finish_busy(self, gen: int | None = None) -> None:
+        """结束忙碌态。P1-4：仅当代次匹配时才清空 worker，避免误清新任务。"""
+        if gen is not None and gen != self._generation:
+            return
         self.progress.stop()
         self.progress.set(0)
         self.btn_analyze.configure(state="normal")

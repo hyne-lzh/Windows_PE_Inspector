@@ -9,7 +9,7 @@
 
 ## 项目状态
 
-**状态：图形界面可用（V0.3.0），持续打磨中**
+**状态：图形界面可用（V0.5.0），持续打磨中**
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
@@ -128,6 +128,9 @@ Windows_PE_Inspector/
 ├── strings.exe            # Sysinternals Strings v2.54（外部字符串提取工具）
 ├── md/
 │   └── nuitka_install.md  # Nuitka 编译指南
+├── PEInspectorSetup.iss   # Inno Setup 安装包脚本（版本号与 README 同步维护）
+├── 问题.md                 # 项目问题清单（分级 P0~P3）
+├── 未来计划.md             # 未来功能计划（A/B/C 三组）
 ├── requirements.txt       # 依赖清单（pefile + customtkinter + tkinterdnd2 + openpyxl，精确锁版本）
 ├── LICENSE.txt            # MIT 许可证全文
 ├── .gitignore
@@ -203,6 +206,9 @@ python builds.py               # 全自动编译（自动测速、择优编译�
 - **修复静默吞异常**：外置词典 / 翻译表加载失败不再 `pass`，转为写入报告 `warnings`，用户可感知自定义词条未生效
 - **修正命名不一致**：CLI 入口文件由 `cmdmain.py` 规范化为 `cmd_main.py`（与 README 一致）
 - **细节修复**：`human_size` 补 GB 档、`_is_future` 改为精确时间比较（不再只比年份）、Excel 公式中和收窄为仅 `=` 开头（避免 `-` 开头文本被误加引号）、HTML 基本信息不再误转义（修 Excel 显示 `&amp;` 的问题）
+- **版本号升至 V0.5.0**：README 状态行与 `PEInspectorSetup.iss` 的 `MyAppVersion` 同步（消除历史版本号不一致）
+- **修复全部 P1 缺陷**（详见 `问题.md`）：字符串提取加双上限防内存耗尽、大文件跳过 pefile 兜底扫描、GUI 线程 `_poll` 丢结果竞态、GUI 并发代际错配、缺依赖不再静默闪退（`main.py` 捕获 `ImportError` 弹窗）、编译文档补齐 4 个关键 `--include-*` 参数、安装脚本改用相对路径
+- **新增文档**：`未来计划.md`（A 高性价比 / B 检测增强 / C 体验工程三组功能规划）；README 目录结构补充 `.iss`、`问题.md`、`未来计划.md`
 
 ### 2026-10-06
 

@@ -40,6 +40,16 @@ except ImportError:  # pragma: no cover - 运行环境已预装 pefile
 # strings.exe 位于项目根目录（achieve 目录的上一级）。
 _DEFAULT_STRINGS_EXE = Path(__file__).resolve().parent.parent / "strings.exe"
 
+# --------------------------------------------------------------------------
+# 资源上限（P1-1：防止"整节可打印字节"构造的样本耗尽内存）
+# --------------------------------------------------------------------------
+# 单次提取保留的最大字符串条数；超过即截断并记 warning。
+MAX_STRINGS = 200_000
+# 单条字符串的最大字符数；超出部分截断（恶意样本可构造数百 MB 的连续可打印字节）。
+MAX_STR_LEN = 8_192
+# 大于该大小的文件默认不再跑 pefile 正则兜底（P1-2：外部工具已成功时避免重复昂贵扫描）。
+PE_REGEX_FALLBACK_MAX_BYTES = 64 * 1024 * 1024
+
 
 def _find_strings_exe(custom_path=None):
     """解析 strings.exe 路径；找不到返回 None（交由上层回退到 pefile）。"""
@@ -96,26 +106,38 @@ def _run_strings_exe(path, min_length, timeout, strings_exe):
     return lines, None
 
 
-def _pefile_extract(path, min_length):
+def _trim(value: str) -> str:
+    """单条字符串长度上限保护（P1-1）。"""
+    if len(value) > MAX_STR_LEN:
+        return value[:MAX_STR_LEN]
+    return value
+
+
+def _pefile_extract(path, min_length, max_strings=MAX_STRINGS):
     """用 pefile 对各节区原始数据做正则扫描，作为兜底来源。
 
-    任何失败都返回空列表，不抛异常。
+    最多收集 ``max_strings`` 条（超出即停止并记入 ``truncated`` 标志），
+    单条长度截断到 ``MAX_STR_LEN``。任何失败都返回 ``([], False)``，不抛异常。
     """
     if pefile is None:
-        return []
+        return [], False
 
-    results: list[str] = []
+    truncated = False
     n = max(1, int(min_length))
     try:
         pe = pefile.PE(path, fast_load=True)
     except Exception:
-        return []
+        return [], False
 
     try:
         ascii_re = re.compile(rb"[\x20-\x7e]{" + str(n).encode() + rb",}")
         uni_re = re.compile(rb"(?:[\x20-\x7e]\x00){" + str(n).encode() + rb",}")
+        raw: list[str] = []   # 未去重的中间结果，条数上限在此层强制
         sections = getattr(pe, "sections", None) or []
         for section in sections:
+            if len(raw) >= max_strings:
+                truncated = True
+                break
             try:
                 data = section.get_data()
             except Exception:
@@ -123,22 +145,36 @@ def _pefile_extract(path, min_length):
             if not data:
                 continue
             for m in ascii_re.finditer(data):
-                results.append(m.group().decode("ascii", errors="replace"))
+                raw.append(_trim(m.group().decode("ascii", errors="replace")))
+                if len(raw) >= max_strings:
+                    break
+            if len(raw) >= max_strings:
+                truncated = True
+                break
             for m in uni_re.finditer(data):
                 try:
-                    results.append(m.group().decode("utf-16-le"))
+                    raw.append(_trim(m.group().decode("utf-16-le")))
                 except Exception:
-                    pass
+                    continue
+                if len(raw) >= max_strings:
+                    break
+            if len(raw) >= max_strings:
+                truncated = True
+                break
     except Exception:
-        pass
+        raw = locals().get("raw", [])
     finally:
         try:
             pe.close()
         except Exception:
             pass
 
-    # 节内/节间可能重复，按首次出现顺序去重
-    return list(dict.fromkeys(results))
+    # 节内/节间可能重复，按首次出现顺序去重（去重后再截断，保证 output<=上限）
+    deduped = list(dict.fromkeys(raw))
+    if len(deduped) > max_strings:
+        deduped = deduped[:max_strings]
+        truncated = True
+    return deduped, truncated
 
 
 def extract_strings(path, min_length=4, use_external=True, timeout=30, strings_exe=None) -> dict:
@@ -159,10 +195,15 @@ def extract_strings(path, min_length=4, use_external=True, timeout=30, strings_e
         "external"   : [...],  # strings.exe 提取到的列表（失败则为空）
         "pefile"     : [...],  # pefile 兜底提取到的列表（非 PE/失败则为空）
         "merged"     : [...],  # 合并去重后的列表（保持首次出现顺序）
-        "source"     : "strings.exe+pefile" | "pefile",  # 实际使用的来源
+        "source"     : "strings.exe+pefile" | "strings.exe" | "pefile",  # 实际来源
         "external_ok": bool,   # 外部工具是否成功
-        "error"      : str|None  # 外部工具失败原因（成功则 None）
+        "error"      : str|None,  # 外部工具失败原因（成功则 None）
+        "truncated"  : bool,   # 是否因 MAX_STRINGS / MAX_STR_LEN 截断
+        "warnings"   : [...],  # 可读的截断/降级提示（供上层并入 report.warnings）
     }
+
+    P1-1：条数与单条长度均有上限，恶意样本不会拖垮内存。
+    P1-2：外部工具成功且文件不大时，不再跑昂贵的 pefile 正则兜底。
     """
     result = {
         "external": [],
@@ -171,6 +212,8 @@ def extract_strings(path, min_length=4, use_external=True, timeout=30, strings_e
         "source": "pefile",
         "external_ok": False,
         "error": None,
+        "truncated": False,
+        "warnings": [],
     }
 
     if not path or not os.path.isfile(path):
@@ -187,14 +230,38 @@ def extract_strings(path, min_length=4, use_external=True, timeout=30, strings_e
     # 仅在主动关闭外部工具时，error 保持 None；否则记录失败原因
     result["error"] = None if (not use_external) else error
 
-    # pefile 始终作为兜底/补充来源参与提取
-    result["pefile"] = _pefile_extract(path, min_length)
+    # P1-2：决定是否跑 pefile 正则兜底
+    #   - 外部失败 ⇒ 必须兜底；
+    #   - 外部成功但文件较大 ⇒ 跳过（外部结果已足够，避免重复读盘 + 全量正则）；
+    #   - 外部成功且文件较小 ⇒ 仍跑一次以补充节区名等外部可能漏掉的内容。
+    try:
+        file_size = os.path.getsize(path)
+    except OSError:
+        file_size = 0
 
-    result["source"] = "strings.exe+pefile" if result["external_ok"] else "pefile"
+    do_fallback = (not result["external_ok"]) or (file_size <= PE_REGEX_FALLBACK_MAX_BYTES)
+    if do_fallback:
+        result["pefile"], truncated = _pefile_extract(path, min_length)
+        if truncated:
+            result["truncated"] = True
+            result["warnings"].append(
+                f"字符串数量超过 {MAX_STRINGS} 条上限，已截断（完整内容请缩小样本或用 strings.exe 处理）"
+            )
+    else:
+        result["warnings"].append(
+            f"文件较大（{file_size} 字节），已跳过 pefile 正则兜底以保证响应速度"
+        )
 
-    # 合并去重：先外部后 pefile，保持首次出现顺序
-    merged = list(dict.fromkeys(result["external"] + result["pefile"]))
-    result["merged"] = merged
+    result["source"] = "strings.exe+pefile" if result["external_ok"] and do_fallback else (
+        "strings.exe" if result["external_ok"] else "pefile")
+
+    # 合并去重：先外部后 pefile，保持首次出现顺序；总数同样受 MAX_STRINGS 限制
+    merged = list(dict.fromkeys((external if use_external else []) + result["pefile"]))
+    if len(merged) > MAX_STRINGS:
+        merged = merged[:MAX_STRINGS]
+        result["truncated"] = True
+        result["warnings"].append(f"合并后字符串超过 {MAX_STRINGS} 条上限，已截断")
+    result["merged"] = [_trim(s) for s in merged]
     return result
 
 

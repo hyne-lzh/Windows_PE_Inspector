@@ -1264,6 +1264,8 @@ def _build_report(pe: pefile.PE, p: Path, lang: str) -> PeReport:
     # 加载期降级告警（外置词典/翻译表加载失败等）——不再静默
     for key, kwargs in _LOAD_WARNINGS:
         warnings.append(t(key, **kwargs))
+    # 字符串提取的截断/降级告警（P1-1 / P1-2）——直接透传可读文案
+    warnings.extend(strings_summary.get("warnings", ()))
     if file_size > 200 * 1024 * 1024:
         warnings.append(t("warn.large_file"))
 

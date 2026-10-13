@@ -128,7 +128,7 @@ python builds.py --check-env
 
 ### 方式二：手动编译
 
-不用脚本，直接执行 Nuitka 命令（参数与 `builds.py` 完全一致）：
+不用脚本，直接执行 Nuitka 命令（参数与 `builds.py` 一致）：
 
 ```bash
 python -m nuitka ^
@@ -143,6 +143,10 @@ python -m nuitka ^
   --python-flag=no_site ^
   --python-flag=no_warnings ^
   --noinclude-setuptools-mode=nofollow ^
+  --include-package=tkinterdnd2 ^
+  --include-package-data=tkinterdnd2 ^
+  --include-data-dir=assets=assets ^
+  --include-data-files=strings.exe=strings.exe ^
   --output-filename=PEInspector.exe ^
   main.py
 ```
@@ -151,6 +155,13 @@ python -m nuitka ^
 > 嫌续行麻烦可写成**一行**，完全等价。
 >
 > **换 Zig 后端**：把 `--mingw64` 换成 `--zig`，其余不变。
+>
+> ⚠️ **后 4 条 `--include-*` 不可省**：
+> - 缺 `--include-package[-data]=tkinterdnd2` ⇒ 拖放失效，严重时启动异常；
+> - 缺 `--include-data-dir=assets=assets` ⇒ 高危词典 / DLL 含义 / 翻译表 / 行为规则全部退回内置小表；
+> - 缺 `--include-data-files=strings.exe=strings.exe` ⇒ 字符串提取退化为 pefile 单来源。
+>
+> 若嫌手动维护易漏，可直接用 `python builds.py --dry-run` 打印脚本实际使用的完整命令，以其为准。
 
 ---
 

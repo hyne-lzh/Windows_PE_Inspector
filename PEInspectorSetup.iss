@@ -3,7 +3,7 @@
 ; Non-commercial use only.
 
 #define MyAppName "PEInspector"
-#define MyAppVersion "0.3"
+#define MyAppVersion "0.5.0"
 #define MyAppPublisher "My Company, Inc."
 #define MyAppExeName "PEInspector.exe"
 #define DoubleAmp(Value) StringChange(Value, "&", "&&")
@@ -27,7 +27,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; Uncomment the following line to use a 64-bit installer.
 ;SetupArchitecture=x64
 DisableProgramGroupPage=yes
-LicenseFile=C:\GitHub\Windows_PE_Inspector\LICENSE.txt
+LicenseFile={#SourcePath}\LICENSE.txt
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 ;PrivilegesRequired=lowest
 OutputBaseFilename=PEInspectorSetup
@@ -43,8 +43,8 @@ Name: "chinesetraditional"; MessagesFile: "compiler:Languages\ChineseTraditional
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "C:\GitHub\Windows_PE_Inspector\main.dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\GitHub\Windows_PE_Inspector\main.dist\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourcePath}\main.dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourcePath}\main.dist\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files.
 
 [Icons]
