@@ -203,7 +203,7 @@ python builds.py               # 全自动编译（自动测速、择优编译�
 - 核心层新增 `check_section_anomaly()`；`SectionInfo` 增加 `suspicious_reasons`、`PeReport` 增加 `suspicious_section_count`
 - **GUI** 节区表新增「可疑原因」列并高亮可疑行、顶部显示汇总；**CLI** 逐条提示可疑原因；**HTML / Excel** 导出新增该列，HTML 顶部横幅与统计同步纳入
 - 误报调优：白名单纳入 `.didat` / `.mrdata` / `.imrsiv` / `RT_BSS` / `RT_DATA` 等正常编译产物；内存展开规则**限定可执行节区**（`.data` 实测可达 156 倍，属正常）。实测 300 EXE + 300 DLL 误报率约 2%，且均为第三方自定义节区
-- 文档同步：`未来计划.md` 标记 A5 完成、`A5.md` 记录实施细节、`问题.md` 登记新增能力
+- 文档同步：`未来计划.md` 标记 A5 完成、`问题.md`「新增能力记录」登记实施细节（本页更新日志亦含要点）
 
 ### 2026-10-11
 
