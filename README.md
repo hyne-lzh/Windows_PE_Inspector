@@ -197,6 +197,14 @@ python builds.py               # 全自动编译（自动测速、择优编译�
 
 ## 更新日志
 
+### 2026-10-15
+
+- **新增「危险节区属性识别」（A5）**：对节区属性做规则化判定并自动标记可疑节区——`W+X`（可写可执行）、可写但不在正常白名单、节区名为空或含非常规字符、可执行节区 `VirtualSize` 远大于 `RawSize`（加壳的内存展开特征）
+- 核心层新增 `check_section_anomaly()`；`SectionInfo` 增加 `suspicious_reasons`、`PeReport` 增加 `suspicious_section_count`
+- **GUI** 节区表新增「可疑原因」列并高亮可疑行、顶部显示汇总；**CLI** 逐条提示可疑原因；**HTML / Excel** 导出新增该列，HTML 顶部横幅与统计同步纳入
+- 误报调优：白名单纳入 `.didat` / `.mrdata` / `.imrsiv` / `RT_BSS` / `RT_DATA` 等正常编译产物；内存展开规则**限定可执行节区**（`.data` 实测可达 156 倍，属正常）。实测 300 EXE + 300 DLL 误报率约 2%，且均为第三方自定义节区
+- 文档同步：`未来计划.md` 标记 A5 完成、`A5.md` 记录实施细节、`问题.md` 登记新增能力
+
 ### 2026-10-11
 
 - **新增 DLL 名称含义**：词典外置 `assets/dll_meanings.json`（121 条常见的系统 / 运行时 / 图形 / 网络 / .NET DLL），导入表 DLL 节点、CLI 与报告均显示用途说明

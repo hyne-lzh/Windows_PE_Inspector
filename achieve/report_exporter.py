@@ -272,12 +272,14 @@ def _html_section_table(sections: list, lang: str) -> str:
         f"<th>{_esc(_t('sections.col_perms', lang))}</th>"
         f"<th>{_esc(_t('sections.col_meaning', lang))}</th>"
         f"<th>{_esc(_t('sections.col_flag', lang))}</th>"
+        f"<th>{_esc(_t('sections.col_reasons', lang))}</th>"
         "</tr>"
     )
     body = []
     for s in sections:
         suspicious = bool(_g(s, "is_suspicious", False))
-        row_cls = ' class="suspicious"' if suspicious else ""
+        reasons = list(_g(s, "suspicious_reasons", []) or [])
+        row_cls = ' class="suspicious"' if (suspicious or reasons) else ""
         mark = _t("report.pos_suspicious", lang) if suspicious else _t("report.pos_normal", lang)
         entropy = _g(s, "entropy", 0.0)
         try:
@@ -293,6 +295,7 @@ def _html_section_table(sections: list, lang: str) -> str:
             f"<td>{_esc(_g(s, 'perms', ''))}</td>"
             f"<td>{_esc(_g(s, 'perms_zh', ''))}</td>"
             f"<td class='{'warn' if suspicious else 'ok'}'>{_esc(mark)}</td>"
+            f"<td class='{'warn' if reasons else 'ok'}'>{_esc(_t('common.reason_join', lang).join(reasons))}</td>"
             "</tr>"
         )
     return f'<table class="data">{head}{"".join(body)}</table>'
@@ -416,6 +419,7 @@ def _html_strings(report: Any, lang: str) -> str | None:
 def _html_risk_summary(report: Any, sections: list, risky: list, lang: str) -> str:
     suspicious_sections = bool(_g(report, "suspicious_sections", False))
     n_susp = sum(1 for s in sections if _g(s, "is_suspicious", False))
+    n_anom = int(_g(report, "suspicious_section_count", 0) or 0)
     stat = _risk_stat(risky)
     entropy_val = (_t("report.high_entropy_yes", lang, n=n_susp) if suspicious_sections
                    else _t("report.high_entropy_no", lang))
@@ -424,17 +428,22 @@ def _html_risk_summary(report: Any, sections: list, risky: list, lang: str) -> s
         _t("report.high_api_field", lang, n=len(risky),
            crit=stat["严重"], med=stat["中等"], low=stat["低"]),
     ]
+    if n_anom:
+        parts.append(_esc(_t("sections.suspect_summary", lang, n=n_anom)))
     return "<br>".join(parts)
 
 
 def _html_warning_banner(report: Any, sections: list, risky: list, lang: str) -> str:
     suspicious_sections = bool(_g(report, "suspicious_sections", False))
+    n_anom = int(_g(report, "suspicious_section_count", 0) or 0)
     has_risky = bool(_get_risky(report))
-    if not (suspicious_sections or has_risky):
+    if not (suspicious_sections or has_risky or n_anom):
         return ""
     reasons = []
     if suspicious_sections:
         reasons.append(_t("report.banner_packed", lang))
+    if n_anom:
+        reasons.append(_t("sections.suspect_summary", lang, n=n_anom))
     if has_risky:
         reasons.append(_t("report.banner_api", lang, n=len(risky)))
     return (
@@ -598,11 +607,12 @@ def _excel_sections(ws, sections: list, lang: str) -> None:
     _ws_append(ws, [_t("sections.col_name", lang), _t("sections.col_vsize", lang),
                     _t("sections.col_rsize", lang), _t("sections.col_entropy", lang),
                     _t("sections.col_perms", lang), _t("sections.col_meaning", lang),
-                    _t("sections.col_flag", lang)])
+                    _t("sections.col_flag", lang), _t("sections.col_reasons", lang)])
     red_fill = PatternFill(fill_type="solid", fgColor="FDECEA")
     red_font = Font(color="C0392B", bold=True)
     for s in sections:
         suspicious = bool(_g(s, "is_suspicious", False))
+        reasons = list(_g(s, "suspicious_reasons", []) or [])
         entropy = _g(s, "entropy", 0.0)
         try:
             entropy_val = round(float(entropy), 3)
@@ -617,8 +627,9 @@ def _excel_sections(ws, sections: list, lang: str) -> None:
             _g(s, "perms", ""),
             _g(s, "perms_zh", ""),
             mark,
+            _t("common.reason_join", lang).join(reasons),
         ])
-        if suspicious:
+        if suspicious or reasons:
             for cell in ws[ws.max_row]:
                 cell.fill = red_fill
                 cell.font = red_font

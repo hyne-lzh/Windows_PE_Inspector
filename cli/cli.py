@@ -105,6 +105,14 @@ def show_sections(r) -> None:
     print(t("cli.entropy_threshold", n=ENTROPY_WARN))
     if r.suspicious_sections:
         print(t("cli.high_entropy_hint"))
+    # A5：属性异常的节区单独提示（与"高熵"是两个维度）
+    if r.suspicious_section_count:
+        print(t("sections.suspect_summary", n=r.suspicious_section_count))
+        for s in r.sections:
+            if s.suspicious_reasons:
+                print(f"  {s.name} : {t('cli.suspect_prefix')}"
+                      + t("cli.suspect_join").join(s.suspicious_reasons) + "）")
+        print(t("cli.suspect_hint"))
 
 
 def show_imports(r) -> None:

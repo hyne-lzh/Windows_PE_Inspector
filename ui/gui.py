@@ -797,18 +797,28 @@ class MainWindow(*_MainWindowBase):
         key = "tab.sections"
         self._clear_tab(key)
         page = self._page(key)
+
+        # A5：属性异常的节区汇总提示（有问题才显示）
+        if report.suspicious_section_count:
+            head = ctk.CTkLabel(
+                page,
+                text=t("sections.suspect_summary", n=report.suspicious_section_count),
+                font=self.font_normal, anchor="w", text_color="#d13438")
+            head.pack(fill="x", padx=12, pady=(8, 0))
+
         search_var, count_label = self._build_search_bar(page)
 
-        cols = ("name", "vsize", "rsize", "entropy", "perms", "perms_zh", "flag")
+        cols = ("name", "vsize", "rsize", "entropy", "perms", "perms_zh", "flag", "reasons")
         tree = ttk.Treeview(page, columns=cols, show="headings", style="PE.Treeview")
         for col, text, width, anchor in [
-            ("name", t("sections.col_name"), 120, "w"),
-            ("vsize", t("sections.col_vsize"), 90, "e"),
-            ("rsize", t("sections.col_rsize"), 90, "e"),
-            ("entropy", t("sections.col_entropy"), 65, "e"),
-            ("perms", t("sections.col_perms"), 95, "w"),
-            ("perms_zh", t("sections.col_meaning"), 200, "w"),
-            ("flag", t("sections.col_flag"), 150, "w"),
+            ("name", t("sections.col_name"), 110, "w"),
+            ("vsize", t("sections.col_vsize"), 85, "e"),
+            ("rsize", t("sections.col_rsize"), 85, "e"),
+            ("entropy", t("sections.col_entropy"), 60, "e"),
+            ("perms", t("sections.col_perms"), 90, "w"),
+            ("perms_zh", t("sections.col_meaning"), 180, "w"),
+            ("flag", t("sections.col_flag"), 130, "w"),
+            ("reasons", t("sections.col_reasons"), 260, "w"),
         ]:
             tree.heading(col, text=text)
             tree.column(col, width=width, anchor=anchor, stretch=True)
@@ -820,8 +830,9 @@ class MainWindow(*_MainWindowBase):
                 None, "",
                 (s.name, human_size(s.virtual_size), human_size(s.raw_size),
                  f"{s.entropy:.2f}", s.perms, s.perms_zh,
-                 t("sections.suspect") if s.is_suspicious else ""),
-                ("suspect",) if s.is_suspicious else (),
+                 t("sections.suspect") if s.is_suspicious else "",
+                 t("common.reason_join").join(s.suspicious_reasons)),
+                ("suspect",) if (s.is_suspicious or s.suspicious_reasons) else (),
                 False,
             )
             for s in report.sections
