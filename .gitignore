@@ -101,3 +101,6 @@ $RECYCLE.BIN/
 # 说明：打包好的成品想随仓库发布时，可强制加入
 #   git add -f dist/PEInspector.exe
 upx.exe
+检查结果.md
+问题.md
+未来计划.md
