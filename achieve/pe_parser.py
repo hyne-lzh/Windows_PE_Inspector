@@ -82,6 +82,34 @@ SECTION_EXPAND_RATIO = 5.0
 # 合规节区名：字母/数字/下划线/点/连字符/美元符（PE 常见）
 _SECTION_NAME_RE = re.compile(r"^[\w.$-]+$")
 
+# --------------------------------------------------------------------------
+# 调试目录类型（A4：IMAGE_DEBUG_TYPE_*）
+# --------------------------------------------------------------------------
+# pefile 未内置这些常量（实测源码搜不到），故自建映射表。
+# 值为 PE 规范标准名，作 translate("DEBUG_TYPE", 名, ...) 的键。
+# 注意：部分资料把 14 写作 "ILO" 系笔误，规范名为 ILTG（增量链接时间戳）；
+# 仅 2(CodeView) 携带 PDB 路径/GUID/Age，其余多为元信息条目。
+_DEBUG_TYPE_NAMES: dict[int, str] = {
+    0: "Unknown",
+    1: "Coff",
+    2: "CodeView",
+    3: "FPO",
+    4: "Misc",
+    5: "Exception",
+    6: "Fixup",
+    7: "OmapToSrc",
+    8: "OmapFromSrc",
+    9: "Borland",
+    10: "Reserved10",
+    11: "CLSID",
+    12: "VCFeature",
+    13: "POGO",
+    14: "ILTG",
+    15: "MPX",
+    16: "Repro",
+    20: "ExDllCharacteristics",
+}
+
 # 通用翻译表（PE 各分类的英文标识 → 各语言说明）
 # --------------------------------------------------------------------------
 # 每个条目的值统一为 {语言代码: 文本}，例如 {"zh": "代码", "en": "Code"}。
@@ -133,6 +161,27 @@ _BUILTIN_TRANSLATIONS: dict[str, dict[str, dict[str, str]]] = {
         "IMAGE_SUBSYSTEM_EFI_ROM": {"zh": "EFI ROM 映像", "en": "EFI ROM image"},
         "IMAGE_SUBSYSTEM_XBOX": {"zh": "Xbox 游戏机", "en": "Xbox"},
         "IMAGE_SUBSYSTEM_WINDOWS_BOOT_APPLICATION": {"zh": "Windows 引导应用程序", "en": "Windows boot application"},
+    },
+    # A4：调试目录类型。键为 _DEBUG_TYPE_NAMES 的规范标准名（如 "CodeView"）
+    "DEBUG_TYPE": {
+        "Unknown": {"zh": "未知类型", "en": "Unknown"},
+        "Coff": {"zh": "COFF 调试信息", "en": "COFF"},
+        "CodeView": {"zh": "CodeView 代码视图", "en": "CodeView"},
+        "FPO": {"zh": "FPO 帧指针省略", "en": "Frame pointer omission"},
+        "Misc": {"zh": "杂项调试信息", "en": "Miscellaneous"},
+        "Exception": {"zh": "异常处理调试信息", "en": "Exception"},
+        "Fixup": {"zh": "重定位调试信息", "en": "Fixup"},
+        "OmapToSrc": {"zh": "OmapToSrc 源映射", "en": "Omap to source"},
+        "OmapFromSrc": {"zh": "OmapFromSrc 源映射", "en": "Omap from source"},
+        "Borland": {"zh": "Borland 调试信息", "en": "Borland"},
+        "Reserved10": {"zh": "保留类型（10）", "en": "Reserved (10)"},
+        "CLSID": {"zh": "类标识符（CLSID）", "en": "CLSID"},
+        "VCFeature": {"zh": "VC 特性", "en": "VC feature"},
+        "POGO": {"zh": "配置文件引导优化", "en": "Profile-guided optimization"},
+        "ILTG": {"zh": "增量链接时间戳（ILTG）", "en": "Incremental link time stamp"},
+        "MPX": {"zh": "内存保护扩展（MPX）", "en": "Memory protection extensions"},
+        "Repro": {"zh": "可复现构建", "en": "Reproducible build"},
+        "ExDllCharacteristics": {"zh": "DLL 特性扩展", "en": "Extended DLL characteristics"},
     },
     "RISK_CATEGORY": {
         "进程注入": {"zh": "进程注入", "en": "Process injection"},
@@ -342,6 +391,19 @@ class PackerHit:
     strings: list[str] = field(default_factory=list)     # 命中的特征字符串
 
 
+@dataclass
+class DebugInfo:
+    """调试目录条目（A4）。仅 CodeView（debug_type==2）携带 PDB 路径 / GUID / Age。"""
+    debug_type: int          # IMAGE_DEBUG_TYPE_* 原始值
+    type_zh: str             # 类型含义（随语言，如 "CodeView 代码视图"）
+    pdb_path: str            # 去尾部 \x00 解码后的完整路径，无则 ""
+    pdb_name: str            # 仅文件名（从 pdb_path 提取），无则 ""
+    guid: str                # 形如 A56CEAAB-52D1-4269-8EE2-A32D59F492AC，无则 ""
+    age: int                 # 无则 0
+    timestamp: int           # 调试信息自身的时间戳
+    cv_signature: str        # "RSDS" / "NB10" / ""
+
+
 # 签名状态取值
 SIG_NONE = "none"
 SIG_VALID = "valid"
@@ -396,6 +458,9 @@ class PeReport:
     has_packers: bool = False
     suspicious_sections: bool = False
     suspicious_section_count: int = 0   # A5：属性异常的节区个数
+    debug_entries: list[DebugInfo] = field(default_factory=list)  # A4：调试目录条目
+    has_pdb: bool = False                       # 是否含至少一条可用 PDB 路径
+    pdb_paths: list[str] = field(default_factory=list)  # 便于导出/检索
     lang: str = "zh"             # 生成本报告时使用的语言
     warnings: list[str] = field(default_factory=list)
 
@@ -712,6 +777,99 @@ _BUILTIN_HIGH_RISK_APIS: dict[str, tuple[str, str, str]] = {
 
 # 外置词典路径（项目根 assets/ 下，用户可自行编辑扩充，无需改代码）
 RISK_DICT_PATH = Path(__file__).resolve().parent.parent / "assets" / "high_risk_apis.json"
+
+
+# --------------------------------------------------------------------------
+# 调试目录解析（A4：PDB 路径 / GUID / Age）
+# --------------------------------------------------------------------------
+
+def _format_guid(sig: str) -> str:
+    """把 32 位十六进制串格式化为标准 GUID；长度或字符不合法一律返回 ""。"""
+    s = (sig or "").strip().upper()
+    if len(s) != 32 or any(c not in "0123456789ABCDEF" for c in s):
+        return ""
+    return f"{s[0:8]}-{s[8:12]}-{s[12:16]}-{s[16:20]}-{s[20:32]}"
+
+
+def _parse_debug(pe, lang: str | None = None) -> list[DebugInfo]:
+    """解析调试目录，返回 DebugInfo 列表（A4）。
+
+    调用方需已对 IMAGE_DIRECTORY_ENTRY_DEBUG 执行过 parse_data_directories()，
+    否则 ``pe.DIRECTORY_ENTRY_DEBUG`` 不存在，本函数返回空列表。
+
+    实现要点：
+    - 仅 CodeView（Type==2）条目的 ``.entry`` 含 PDB 路径 / GUID / Age；
+      pefile 对每条都设 ``entry``，但其余类型多为 None 或结构不同（无 PdbFileName），
+      必须用 getattr 兜底；
+    - PdbFileName 是 bytes 且尾部带结构对齐填充的多个 \\x00，须剔除后再解码；
+    - 微软发布版系统文件常有调试目录但 PdbFileName 为空（发布时剥离了路径），
+      **属正常现象，不是解析失败**；
+    - 单条解析全程 try/except：畸形样本的一条坏条目不能拖垮整个解析
+      （沿用项目「畸形 PE 绝不裸抛」原则）。
+    """
+    lang = lang or get_language()
+    out: list[DebugInfo] = []
+    for e in getattr(pe, "DIRECTORY_ENTRY_DEBUG", None) or []:
+        try:
+            debug_type = int(e.struct.Type)
+            timestamp = int(e.struct.TimeDateStamp)
+            name = _DEBUG_TYPE_NAMES.get(debug_type, "")
+            # 未知类型不在表内：default 兜底显示原始值，保证 type_zh 非空
+            type_zh = translate("DEBUG_TYPE", name,
+                                default=name or str(debug_type), lang=lang)
+
+            entry = getattr(e, "entry", None)  # 仅 CodeView 的 entry 含 PDB 字段，其余多为 None
+            pdb_path = ""
+            pdb_name = ""
+            guid = ""
+            age = 0
+            cv_signature = ""
+            if entry is not None:
+                raw = getattr(entry, "PdbFileName", b"")
+                if isinstance(raw, str):
+                    # 容错：个别 pefile 版本/样本可能直接给 str
+                    pdb_path = raw.rstrip("\x00")
+                elif isinstance(raw, (bytes, bytearray)):
+                    pdb_path = bytes(raw).rstrip(b"\x00").decode("utf-8", errors="replace")
+                # 不用 pathlib：Windows 路径含反斜杠，Linux 下 PureWindowsPath 才认，
+                # 这里手工切分最稳妥
+                pdb_name = pdb_path.replace("\\", "/").rsplit("/", 1)[-1]
+                # pefile 的 Signature_String 是「32 位 GUID + Age 十六进制」拼接
+                # （pefile.py: uuid.UUID(...).replace("-","").upper() + f"{Age:X}"，
+                #   实测 RSDS 样本为 33 字符），须取前 32 位才是 GUID；
+                # NB10 老条目无该属性，getattr 兜底为 ""
+                sig = str(getattr(entry, "Signature_String", "") or "")[:32]
+                guid = _format_guid(sig)
+                cv_raw = getattr(entry, "CvSignature", b"")
+                if isinstance(cv_raw, (bytes, bytearray)):
+                    cv_signature = bytes(cv_raw).decode("ascii", errors="replace")
+                elif isinstance(cv_raw, str):
+                    cv_signature = cv_raw
+                age = int(getattr(entry, "Age", 0) or 0)
+            out.append(DebugInfo(
+                debug_type=debug_type,
+                type_zh=type_zh,
+                pdb_path=pdb_path,
+                pdb_name=pdb_name,
+                guid=guid,
+                age=age,
+                timestamp=timestamp,
+                cv_signature=cv_signature,
+            ))
+        except Exception:  # noqa: BLE001
+            # 畸形样本的单个坏条目（字段缺失/类型异常/解码失败）不应拖垮整个解析，
+            # 跳过该条、继续处理其余条目
+            continue
+    return out
+
+
+def _has_path_separator(pdb_path: str) -> bool:
+    """PdbFileName 是否含真实路径分隔符（区别于仅裸文件名）。
+
+    微软发布版常把完整路径剥离为裸文件名（如 "notepad.pdb"），该形态不含
+    编译机目录信息、无溯源价值，汇总 has_pdb / pdb_paths 时须据此过滤。
+    """
+    return "\\" in pdb_path or "/" in pdb_path
 
 
 def _load_high_risk_apis() -> dict[str, tuple[str, str, str]]:
@@ -1230,6 +1388,8 @@ def parse_pe(path, lang: str | None = None) -> PeReport:
             directories=[
                 pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],
                 pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"],
+                # A4：不解析则 pe.DIRECTORY_ENTRY_DEBUG 不存在，_parse_debug 恒空
+                pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DEBUG"],
             ]
         )
         return _build_report(pe, p, lang)
@@ -1344,6 +1504,13 @@ def _build_report(pe: pefile.PE, p: Path, lang: str) -> PeReport:
     # 数字签名校验（只读文件，不执行样本）
     signature = check_signature(pe, str(p))
 
+    # A4：调试目录（PDB 路径 / GUID / Age）。pdb_paths 仅收集"含真实路径分隔符"
+    # 的值——微软发布版常把完整路径剥离为裸文件名（如 "notepad.pdb"），该形态无
+    # 溯源价值；has_pdb 语义 = 含至少一条"可用"PDB 路径（见 A4.md 字段注释）。
+    debug_entries = _parse_debug(pe, lang)
+    pdb_paths = [d.pdb_path for d in debug_entries if _has_path_separator(d.pdb_path)]
+    has_pdb = bool(pdb_paths)
+
     warnings: list[str] = []
     # 加载期降级告警（外置词典/翻译表加载失败等）——不再静默
     for key, kwargs in _LOAD_WARNINGS:
@@ -1388,6 +1555,9 @@ def _build_report(pe: pefile.PE, p: Path, lang: str) -> PeReport:
         has_packers=bool(packers),
         suspicious_sections=any(s.is_suspicious for s in sections),
         suspicious_section_count=suspicious_section_count,
+        debug_entries=debug_entries,
+        has_pdb=has_pdb,
+        pdb_paths=pdb_paths,
         lang=lang,
         warnings=warnings,
     )

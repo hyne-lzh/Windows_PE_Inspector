@@ -201,6 +201,11 @@ def _get_packers(report: Any) -> list:
     return _g(report, "packers", []) or []
 
 
+def _get_debug(report: Any) -> list:
+    """调试目录条目（A4）。PeReport.debug_entries，缺字段时回退空列表。"""
+    return _g(report, "debug_entries", []) or []
+
+
 def _risk_stat(risky: list) -> dict:
     stat = {lv: 0 for lv in RISK_LEVELS}
     for x in risky:
@@ -258,6 +263,41 @@ def _html_packer_table(report: Any, lang: str) -> str:
         for p in packers
     )
     return f'<table class="data">{head}{body}</table>'
+
+
+def _html_debug(report: Any, lang: str) -> str:
+    """调试信息区块（A4）。读 PeReport.debug_entries；无条目时占位提示。"""
+    entries = _get_debug(report)
+    if not entries:
+        return f'<p class="empty">{_esc(_t("debug.none", lang))}</p>'
+    head = (
+        "<tr>"
+        f"<th>{_esc(_t('debug.type', lang))}</th>"
+        f"<th>{_esc(_t('debug.pdb_path', lang))}</th>"
+        f"<th>{_esc(_t('debug.pdb_name', lang))}</th>"
+        f"<th>{_esc(_t('debug.guid', lang))}</th>"
+        f"<th>{_esc(_t('debug.age', lang))}</th>"
+        f"<th>{_esc(_t('debug.timestamp', lang))}</th>"
+        "</tr>"
+    )
+    body = []
+    for d in entries:
+        body.append(
+            "<tr>"
+            f"<td>{_esc(_g(d, 'type_zh', ''))}</td>"
+            f"<td>{_esc(_g(d, 'pdb_path', ''))}</td>"
+            f"<td>{_esc(_g(d, 'pdb_name', ''))}</td>"
+            f"<td>{_esc(_g(d, 'guid', ''))}</td>"
+            f"<td>{_esc(_g(d, 'age', ''))}</td>"
+            f"<td>{_esc(_g(d, 'timestamp', ''))}</td>"
+            "</tr>"
+        )
+    # 有目录无 PDB 路径（发布版剥离）与有 PDB 路径是两种语义，分别提示
+    note_key = "debug.pdb_hint" if _g(report, "has_pdb", False) else "debug.no_pdb"
+    return (
+        f'<table class="data">{head}{"".join(body)}</table>'
+        f'<p class="total">{_esc(_t(note_key, lang))}</p>'
+    )
 
 
 def _html_section_table(sections: list, lang: str) -> str:
@@ -430,6 +470,13 @@ def _html_risk_summary(report: Any, sections: list, risky: list, lang: str) -> s
     ]
     if n_anom:
         parts.append(_esc(_t("sections.suspect_summary", lang, n=n_anom)))
+    # A4：有可用 PDB 路径时在摘要提示编译机信息泄露（溯源价值，归入同区展示）
+    if _g(report, "has_pdb", False):
+        paths = _g(report, "pdb_paths", []) or []
+        hint = _t("debug.pdb_hint", lang)
+        if paths:
+            hint += f": {paths[0]}"
+        parts.append(_esc(hint))
     return "<br>".join(parts)
 
 
@@ -516,6 +563,7 @@ def export_html(report: Any, out_path: Any, lang: str | None = None) -> str:
 
     blocks = [f'<section><h2>{_esc(_t("report.basic_title", lang))}</h2>{_html_basic_table(report, lang)}</section>']
     blocks.append(f'<section><h2>{_esc(_t("packer.title", lang))}</h2>{_html_packer_table(report, lang)}</section>')
+    blocks.append(f'<section><h2>{_esc(_t("debug.tab", lang))}</h2>{_html_debug(report, lang)}</section>')
     blocks.append(f'<section><h2>{_esc(_t("report.sections_title", lang))}</h2>{_html_section_table(sections, lang)}</section>')
     blocks.append(f'<section><h2>{_esc(_t("report.imports_title", lang))}</h2>{_html_imports(imports, lang)}</section>')
     blocks.append(f'<section><h2>{_esc(_t("report.exports_title", lang))}</h2>{_html_exports(exports, lang)}</section>')
@@ -599,6 +647,22 @@ def _excel_packers(ws, report: Any, lang: str) -> None:
         return
     for p in packers:
         _ws_append(ws, [_g(p, "name", ""), _packer_evidence(p, lang)])
+
+
+def _excel_debug(ws, report: Any, lang: str) -> None:
+    """调试信息工作表（A4）。表头 + 每条；无条目时写占位行。"""
+    _ws_append(ws, [_t("debug.type", lang), _t("debug.pdb_path", lang),
+                    _t("debug.pdb_name", lang), _t("debug.guid", lang),
+                    _t("debug.age", lang), _t("debug.timestamp", lang)])
+    entries = _get_debug(report)
+    if not entries:
+        _ws_append(ws, [_t("debug.none", lang), "", "", "", "", ""])
+        return
+    for d in entries:
+        _ws_append(ws, [
+            _g(d, "type_zh", ""), _g(d, "pdb_path", ""), _g(d, "pdb_name", ""),
+            _g(d, "guid", ""), _g(d, "age", ""), _g(d, "timestamp", ""),
+        ])
 
 
 def _excel_sections(ws, sections: list, lang: str) -> None:
@@ -711,6 +775,9 @@ def export_excel(report: Any, out_path: Any, lang: str | None = None) -> str:
 
     ws_pack = wb.create_sheet(_t("packer.title", lang))
     _excel_packers(ws_pack, report, lang)
+
+    ws_debug = wb.create_sheet(_t("debug.tab", lang))
+    _excel_debug(ws_debug, report, lang)
 
     ws_sec = wb.create_sheet(_t("report.sections_title", lang))
     _excel_sections(ws_sec, sections, lang)

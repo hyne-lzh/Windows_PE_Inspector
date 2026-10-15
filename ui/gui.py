@@ -1,7 +1,7 @@
 """Windows PE Inspector —— 图形界面（customtkinter）。
 
-选一个 PE 文件 → 后台线程解析 → 六页展示（基本信息 / 节区 / 导入表 / 导出表 /
-高危 API / 字符串）。支持**中英双语切换**（右上角分段按钮，切换后自动重解析）。
+选一个 PE 文件 → 后台线程解析 → 七页展示（基本信息 / 调试信息 / 节区 / 导入表 /
+导出表 / 高危 API / 字符串）。支持**中英双语切换**（右上角分段按钮，切换后自动重解析）。
 
 线程模型（铁律，不得更改）：
 - 解析跑在 ``threading.Thread(daemon=True)`` 里，**绝不触碰任何 widget**；
@@ -55,7 +55,8 @@ MIN_H = 560
 FONT_FAMILY = "Microsoft YaHei UI"  # 本机已实测可用；不带 UI 的 "Microsoft YaHei" 不存在
 
 # 分页的 i18n 键（顺序即展示顺序）
-_TAB_KEYS = ("tab.basic", "tab.sections", "tab.imports",
+# A4：调试信息复用既有 debug.tab 键，置于「基本信息」之后（属文件级元数据）
+_TAB_KEYS = ("tab.basic", "debug.tab", "tab.sections", "tab.imports",
              "tab.exports", "tab.risks", "tab.strings")
 
 # 字符串分页最多展示的"其他"类条数（超大文件防卡顿，完整内容用导出报告查看）
@@ -724,6 +725,7 @@ class MainWindow(*_MainWindowBase):
 
     def render(self, report) -> None:
         self._render_info(report)
+        self._render_debug(report)
         self._render_sections(report)
         self._render_imports(report)
         self._render_exports(report)
@@ -788,6 +790,58 @@ class MainWindow(*_MainWindowBase):
                          font=self.font_normal, anchor="w").grid(
                 row=row, column=0, columnspan=2, sticky="w", padx=12, pady=2)
             row += 1
+
+    def _render_debug(self, report) -> None:
+        """渲染「调试信息」分页（A4）：调试目录条目表 + 顶部语义提示。
+
+        三种情形：无调试目录 → 占位；有目录但无可用 PDB 路径 → 灰字提示；
+        检测到 PDB 路径 → 红字提示（可能泄露编译机信息）。
+        """
+        key = "debug.tab"
+        self._clear_tab(key)
+        page = self._page(key)
+        entries = getattr(report, "debug_entries", None) or []
+        if not entries:
+            self._placeholder(key, t("debug.none"))
+            return
+
+        if getattr(report, "has_pdb", False):
+            head_text, head_color = t("debug.pdb_hint"), "#d13438"
+        else:
+            head_text, head_color = t("debug.no_pdb"), "gray"
+        ctk.CTkLabel(page, text=head_text, font=self.font_normal,
+                     anchor="w", text_color=head_color).pack(fill="x", padx=12, pady=(8, 0))
+        ctk.CTkLabel(page, text=t("debug.summary", n=len(entries)), font=self.font_normal,
+                     anchor="w", text_color="gray").pack(fill="x", padx=12, pady=(2, 0))
+
+        search_var, count_label = self._build_search_bar(page)
+
+        cols = ("type", "path", "name", "guid", "age", "cv")
+        tree = ttk.Treeview(page, columns=cols, show="headings", style="PE.Treeview")
+        for col, text, width, anchor in [
+            ("type", t("debug.type"), 160, "w"),
+            ("path", t("debug.pdb_path"), 420, "w"),
+            ("name", t("debug.pdb_name"), 140, "w"),
+            ("guid", t("debug.guid"), 280, "w"),
+            ("age", t("debug.age"), 60, "e"),
+            ("cv", t("debug.cv_signature"), 90, "w"),
+        ]:
+            tree.heading(col, text=text)
+            tree.column(col, width=width, anchor=anchor, stretch=True)
+
+        # 直接用 DebugInfo 原始值；空值统一显示 "-"（与其它分页的占位风格一致）
+        rows = [
+            _Row(None, "", (
+                d.type_zh,
+                d.pdb_path or "-",
+                d.pdb_name or "-",
+                d.guid or "-",
+                str(d.age) if d.age else "-",
+                d.cv_signature or "-",
+            ), (), False)
+            for d in entries
+        ]
+        self._attach_table(page, tree, rows, search_var, count_label)
 
     def _render_packers(self, report) -> None:
         """（预留）单独展示打包器证据；当前并入基本信息页。"""

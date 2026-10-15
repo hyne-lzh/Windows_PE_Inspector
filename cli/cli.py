@@ -11,6 +11,7 @@
     python cmd_main.py <PE 文件> --risks      # 只看高危 API
     python cmd_main.py <PE 文件> --packers    # 只看打包器识别
     python cmd_main.py <PE 文件> --signature  # 只看数字签名
+    python cmd_main.py <PE 文件> --debug      # 只看调试信息（PDB 路径 / GUID / Age）
     python cmd_main.py <PE 文件> --strings    # 只看字符串
     python cmd_main.py <PE 文件> --lang en    # 英文输出（默认 zh）
 
@@ -188,6 +189,31 @@ def show_signature(r) -> None:
     print(_sig_text(r))
 
 
+def show_debug(r) -> None:
+    """调试信息区块（A4）。三种情形：无调试目录 / 有目录无 PDB 路径 / 有 PDB 路径。"""
+    rule(t("debug.tab"))
+    entries = getattr(r, "debug_entries", None) or []
+    if not entries:
+        print(t("debug.none"))
+        return
+    print(f"{t('debug.type'):<32}{t('debug.pdb_path')}")
+    print("-" * 88)
+    for d in entries:
+        print(f"{d.type_zh:<32}{d.pdb_path or t('common.dash')}")
+        # 仅 CodeView 条目有 GUID/Age，单独缩进一行显示，避免主表被撑宽
+        detail = []
+        if d.guid:
+            detail.append(f"{t('debug.guid')}: {d.guid}")
+        if d.age:
+            detail.append(f"{t('debug.age')}: {d.age}")
+        if detail:
+            print("    " + "  ".join(detail))
+    print("-" * 88)
+    print(t("debug.summary", n=len(entries)))
+    # has_pdb 为假 = 有调试目录但路径被剥离（微软发布版常见），不是解析失败
+    print(t("debug.pdb_hint") if getattr(r, "has_pdb", False) else t("debug.no_pdb"))
+
+
 def show_strings(r) -> None:
     rule(t("tab.strings"))
     summary = r.strings_summary or {}
@@ -226,6 +252,7 @@ def main() -> int:
     parser.add_argument("--risks", action="store_true", help="显示高危 API 列表")
     parser.add_argument("--packers", action="store_true", help="显示打包器识别结果")
     parser.add_argument("--signature", action="store_true", help="显示数字签名信息")
+    parser.add_argument("--debug", action="store_true", help="显示调试信息（PDB 路径 / GUID / Age）")
     parser.add_argument("--strings", action="store_true", help="显示提取到的字符串")
     parser.add_argument("--export", metavar="PATH", help="导出报告到文件（.html 或 .xlsx）")
     parser.add_argument("--format", choices=["html", "xlsx", "auto"], default="auto",
@@ -245,7 +272,8 @@ def main() -> int:
 
     show_all = args.all or not (
         args.header or args.sections or args.imports or args.exports
-        or args.risks or args.packers or args.signature or args.strings or args.export
+        or args.risks or args.packers or args.signature or args.debug
+        or args.strings or args.export
     )
 
     if show_all or args.header:
@@ -262,6 +290,8 @@ def main() -> int:
         show_packers(report)
     if show_all or args.signature:
         show_signature(report)
+    if show_all or args.debug:
+        show_debug(report)
     if show_all or args.strings:
         show_strings(report)
 

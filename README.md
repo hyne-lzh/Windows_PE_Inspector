@@ -16,7 +16,7 @@
 | 工程环境 | 已完成 | `.venv`（Python 3.12.8）、`requirements.txt`、`.gitignore` |
 | 编译链路 | 已完成 | Nuitka 4.2.1 全自动编译脚本（`builds.py`） |
 | 解析核心 | 已完成 | `achieve/pe_parser.py`：基本/节区/导入/导出/高危 API 统一解析 |
-| 图形界面 | 已完成 | customtkinter 六页（基本信息/节区/导入/导出/高危 API/字符串） |
+| 图形界面 | 已完成 | customtkinter 七页（基本信息/调试信息/节区/导入/导出/高危 API/字符串） |
 | 信息面板 | 已完成 | 节区表含中文权限含义列、导入/导出层级树、高危 API 与字符串表格 |
 | 高危 API 检测 | 已完成 | 词典外置为 `assets/high_risk_apis.json`（**608 条 / 22 分类**，含内核与驱动层），**已融入导入表按等级着色**：高危红、中危橙、低危黄、安全绿 |
 | 字符串提取 | 已完成 | `strings.exe`（Sysinternals）+ pefile 双重来源，失败自动回退；按 **10 类**分组树状展示（URL / IP / 注册表 / 路径 / PDB / XML / 节区名 / DLL 名称 / API 名称 / 其他），URL 检测**容忍 CRL/OCSP 截断**的行首噪音（s/V/a/3/X 等），长内容支持横向滚动 |
@@ -25,9 +25,10 @@
 | 加壳检测 | 已完成 | 节区熵值超 7.2 自动标红 + 终端提示 |
 | 采样熵 | 已完成 | 节区 > 50 MB 自动改用 4 MB 采样，实测 13x 加速且熵值与全量一致 |
 | DLL 名称含义 | 已完成 | 词典外置 `assets/dll_meanings.json`（**121 条**）；导入表节点、CLI 与报告均显示 DLL 用途 |
-| 中英双语 | 已完成 | 语言包外置 `assets/i18n.json`（157 键）+ `achieve/i18n.py`；GUI 右上角切换、CLI `--lang`、报告导出同步 |
+| 中英双语 | 已完成 | 语言包外置 `assets/i18n.json`（199 键）+ `achieve/i18n.py`；GUI 右上角切换、CLI `--lang`、报告导出同步 |
 | 打包器识别 | 已完成 | UPX / PyInstaller / Nuitka / VMProtect（另含 Themida / ASPack / MPRESS / PECompact / Enigma / WinUpack），节区名 + 特征字符串双证据 |
 | 数字签名校验 | 已完成 | Authenticode：`WinVerifyTrust` 判有效性 + 提取签名者/颁发者，无签名优雅降级；**只读文件，不执行样本** |
+| 调试信息（PDB） | 已完成 | 解析调试目录 CodeView (RSDS) 记录：PDB 路径 / GUID / Age / 调试类型（`_DEBUG_TYPE_NAMES`）；**`has_pdb` 只认含路径分隔符的完整路径**（裸文件名不计入）；含路径时提示可能泄露编译机信息。GUI 第 2 分页「调试信息」、CLI `--debug`、HTML 区块 + Excel 工作表 |
 | 打包发布 | 规划中 | Nuitka 编译为免安装 exe（脚本就绪，待发布 Release） |
 | DLL 依赖检测 | 规划中 | 检查系统是否存在、位数是否匹配、递归展开依赖树 |
 | 资源提取 | 规划中 | 图标导出 PNG、版本信息与公司名读取 |
@@ -67,6 +68,7 @@
 - [x] 中英双语：语言包外置 `assets/i18n.json`，GUI 右上角切换、CLI `--lang en`、报告同步
 - [x] 打包器识别：UPX / PyInstaller / Nuitka / VMProtect 等，节区名 + 特征字符串双证据
 - [x] 数字签名校验：Authenticode 有效性判定 + 签名者 / 颁发者提取（只读，不执行样本）
+- [x] 调试信息（A4）：解析 `DIRECTORY_ENTRY_DEBUG` 的 CodeView (RSDS) 记录，提取 PDB 路径 / GUID / Age / 类型；GUI 新增「调试信息」分页、CLI `--debug`、HTML 区块 + Excel 工作表
 
 ### 规划中
 
@@ -198,6 +200,12 @@ python builds.py               # 全自动编译（自动测速、择优编译�
 ## 更新日志
 
 ### 2026-10-15
+
+- **新增「调试信息 / PDB 路径」（A4）**：解析 `IMAGE_DIRECTORY_ENTRY_DEBUG` 的 CodeView (RSDS) 记录，提取 **PDB 路径 / GUID / Age / 调试类型**。PDB 路径常残留编译机信息（实测 `dotnet.exe` 暴露 Azure DevOps 构建目录 `D:\a\_work\1\s\...`、`git-bash.exe` 暴露 MINGW 构建路径），是溯源与家族关联的线索
+- 核心层新增 `DebugInfo` / `_parse_debug()` / `_format_guid()` / `_has_path_separator()` / `_DEBUG_TYPE_NAMES` 与 `DEBUG_TYPE` 翻译分类；`PeReport` 新增 `debug_entries` / `has_pdb` / `pdb_paths`
+- **`has_pdb` 语义**：只认**含路径分隔符的完整路径**。微软发布版系统文件常只留裸文件名（如 `notepad.pdb`），不计入，界面显示「存在调试目录，但未保留 PDB 路径」
+- 展示层：**GUI** 新增「调试信息」分页（第 2 页，紧接「基本信息」）；**CLI** 新增 `--debug`；**HTML / Excel** 新增调试信息区块与工作表；`i18n.json` 新增 12 个 `debug.*` 键（中英对齐，共 **199 键**）
+- **实测修正（写进 `A4.md` 备查）**：`entry.Signature_String` 实为「32 位 GUID + Age 十六进制」拼接，须取 `[:32]`；`pefile` 对**每条**调试条目都设 `entry`（多数为 `None`）
 
 - **新增「危险节区属性识别」（A5）**：对节区属性做规则化判定并自动标记可疑节区——`W+X`（可写可执行）、可写但不在正常白名单、节区名为空或含非常规字符、可执行节区 `VirtualSize` 远大于 `RawSize`（加壳的内存展开特征）
 - 核心层新增 `check_section_anomaly()`；`SectionInfo` 增加 `suspicious_reasons`、`PeReport` 增加 `suspicious_section_count`
