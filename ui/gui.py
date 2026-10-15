@@ -743,6 +743,11 @@ class MainWindow(*_MainWindowBase):
         signer = getattr(sig, "signer", "")
         if signer:
             text += f" · {t('signature.signer')}: {signer}"
+        # 标记签名类别（embedded / catalog）。kind 字段由 pe_parser 提供；
+        # 旧版本 PeReport 可能没有 kind，getattr 兜底为 embedded（最常见情况）
+        kind = getattr(sig, "kind", "embedded")
+        if kind == "catalog":
+            text += f" · {t('signature.kind_catalog')}"
         return text
 
     def _render_info(self, report) -> None:

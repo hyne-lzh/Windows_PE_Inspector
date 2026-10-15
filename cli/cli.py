@@ -61,6 +61,10 @@ def _sig_text(report) -> str:
     detail = getattr(sig, "detail", "")
     if detail and status == "invalid":
         text += f" ({detail})"
+    # 标记签名类别（embedded / catalog）。kind 字段由 pe_parser 提供
+    kind = getattr(sig, "kind", "embedded")
+    if kind == "catalog":
+        text += f" · {t('signature.kind_catalog')}"
     return text
 
 

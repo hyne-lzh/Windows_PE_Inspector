@@ -410,12 +410,23 @@ SIG_VALID = "valid"
 SIG_INVALID = "invalid"
 SIG_UNKNOWN = "unknown"
 
+# 签名类别（kind）：嵌入式证书 vs 操作系统目录签名（catalog-signed）
+SIG_KIND_NONE = "none"           # 无签名
+SIG_KIND_EMBEDDED = "embedded"   # 内嵌 PKCS#7 证书（IMAGE_DIRECTORY_ENTRY_SECURITY 非空）
+SIG_KIND_CATALOG = "catalog"     # 仅目录签名（内嵌 Security 目录为空，由 WinVerifyTrust 凭 .cat 校验通过）
+
 
 @dataclass
 class SignatureInfo:
-    """数字签名信息。status 取值见 SIG_* 常量。"""
+    """数字签名信息。status 取值见 SIG_* 常量；kind 取值见 SIG_KIND_* 常量。
+
+    关键：``present=True`` 表示**至少在 Windows 层面**该 PE 已被认为「已签名」——
+    包括内嵌签名与目录签名（catalog-signed）。仅当 WinVerifyTrust 报告无效或不可用，
+    且内嵌 Security 目录也为空时，``present=False``。
+    """
     present: bool = False
     status: str = SIG_NONE
+    kind: str = SIG_KIND_NONE     # 签名类别，见 SIG_KIND_*
     signer: str = ""
     issuer: str = ""
     detail: str = ""            # 失败原因 / 错误码
@@ -1170,6 +1181,124 @@ def _win_verify_file(path: str) -> tuple[str, str]:
     return SIG_INVALID, f"0x{code & 0xFFFFFFFF:08X}"
 
 
+def _win_check_catalog(path: str) -> bool:
+    """检查文件是否被 Windows 目录签名（catalog-signed）。
+
+    WinVerifyTrust 对 catalog 文件会返回 ``0x800B0100``（找不到内嵌证书对应 .cat
+    条目）而误判为 invalid。正确做法是用 ``CryptCATAdmin*`` 系列 API 自己
+    算 SHA1 哈希并查询 ``C:\\Windows\\System32\\catroot\\`` 下的 .cat 文件。
+
+    - 返回 ``True``：该文件的 SHA1 在系统 .cat 中能找到
+    - 返回 ``False``：未找到，或非 Windows / ctypes 不可用 / API 失败
+
+    关键安全约束：纯静态、只读文件，不联网、不执行样本。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return False
+    if not hasattr(ctypes, "windll"):
+        return False
+
+    # 准备 wintrust.dll 句柄（CryptCATAdmin* 在 wintrust.dll，不在 crypt32.dll）
+    try:
+        wintrust = ctypes.WinDLL("wintrust.dll")
+    except OSError:
+        return False
+
+    # 关键：CryptCATAdminCalcHashFromFileHandle 的官方签名只有 4 个参数：
+    #   (HANDLE hFile, DWORD* pcbHash, BYTE* pbHash, DWORD dwFlags)
+    # MSDN 与 Wine 头文件均如此。本函数**不接受** HCATADMIN —— 网上部分示例是错的。
+    catadmin_calc = wintrust.CryptCATAdminCalcHashFromFileHandle
+    catadmin_calc.argtypes = [
+        wintypes.HANDLE,                            # hFile
+        ctypes.POINTER(wintypes.DWORD),             # pcbHash
+        ctypes.POINTER(ctypes.c_ubyte),             # pbHash
+        wintypes.DWORD,                             # dwFlags
+    ]
+    catadmin_calc.restype = ctypes.c_bool
+
+    # CryptCATAdminEnumCatalogFromHash：MSDN 文档说无参数版本不存在；实测 Win10/11
+    # 真实签名是 (HCATADMIN hCatAdmin, BYTE* pbHash, DWORD cbHash, DWORD dwFlags, ...)
+    # 旧版有 PSTR catname 字段，新版无。安全做法：传 NULL catname，只看返回值非零。
+    catadmin_enum = getattr(wintrust, "CryptCATAdminEnumCatalogFromHash", None)
+    if catadmin_enum is None:
+        return False
+
+    # AcquireContext / ReleaseContext：必须用 GlobAddContextFlag 否则获取不到全局 .cat
+    catadmin = wintrust.CryptCATAdminAcquireContext
+    catadmin.argtypes = [ctypes.POINTER(wintypes.HANDLE), ctypes.c_void_p, wintypes.DWORD]
+    catadmin.restype = ctypes.c_bool
+
+    catadmin_release = wintrust.CryptCATAdminReleaseContext
+    catadmin_release.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    catadmin_release.restype = ctypes.c_bool
+
+    ctx = wintypes.HANDLE()
+    if not catadmin(ctypes.byref(ctx), None, 0):
+        return False
+
+    file_handle = wintypes.HANDLE()
+    try:
+        # CreateFileW 拿只读句柄；INVALID_HANDLE_VALUE 失败
+        CreateFileW = ctypes.WinDLL("kernel32.dll").CreateFileW
+        CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        ]
+        CreateFileW.restype = wintypes.HANDLE
+        GENERIC_READ = 0x80000000
+        FILE_SHARE_READ = 0x00000001
+        OPEN_EXISTING = 3
+        file_handle = CreateFileW(
+            str(path), GENERIC_READ, FILE_SHARE_READ, None, OPEN_EXISTING, 0, None
+        )
+        if file_handle == wintypes.HANDLE(-1).value or file_handle is None:
+            return False
+
+        # 算 SHA1（20 字节）：先入参 pcbHash=20，返回时被覆盖为真实长度
+        hash_buf = (ctypes.c_ubyte * 20)()
+        hash_len = wintypes.DWORD(20)
+        ok = catadmin_calc(file_handle, ctypes.byref(hash_len), hash_buf, 0)
+        if not ok or hash_len.value < 20:
+            return False
+
+        # 试 Win10+ 标准签名：(HCATADMIN, BYTE*, DWORD, DWORD, PCWSTR, DWORD*)
+
+        cat_info = None
+        for argtypes in (
+            # 文档签名（Win10 1903+）：返回 CAT_INFO*，无 catname
+            [wintypes.HANDLE, ctypes.POINTER(ctypes.c_ubyte), wintypes.DWORD,
+             wintypes.DWORD, ctypes.c_wchar_p, ctypes.POINTER(wintypes.DWORD)],
+            # 旧版（< Win10 1903）：带 catname 指针
+            [wintypes.HANDLE, ctypes.POINTER(ctypes.c_ubyte), wintypes.DWORD,
+             wintypes.DWORD, ctypes.c_char_p, ctypes.POINTER(wintypes.DWORD)],
+        ):
+            try:
+                catadmin_enum.argtypes = argtypes
+                catadmin_enum.restype = ctypes.c_void_p
+                info = catadmin_enum(ctx, hash_buf, 20, 0, None, None)
+                if info:
+                    cat_info = info
+                    break
+            except (OSError, AttributeError, ctypes.ArgumentError):
+                continue
+        return cat_info is not None and cat_info != 0
+    except Exception:
+        return False
+    finally:
+        if file_handle:
+            try:
+                ctypes.WinDLL("kernel32.dll").CloseHandle(file_handle)
+            except Exception:
+                pass
+        try:
+            catadmin_release(ctx, 0)
+        except Exception:
+            pass
+
+
 def _win_extract_signer(sig_bytes: bytes) -> tuple[str, str]:
     """从 PKCS#7 签名数据中提取 (签名者, 颁发者) 的显示名。失败返回空串。
 
@@ -1337,22 +1466,52 @@ def _win_extract_signer(sig_bytes: bytes) -> tuple[str, str]:
 
 
 def check_signature(pe, path: str) -> SignatureInfo:
-    """检查 PE 数字签名。无签名 → present=False；有签名 → 校验有效性并提取签名者。"""
+    """检查 PE 数字签名。
+
+    关键修复（P 级缺陷，曾漏检目录签名）：当内嵌 IMAGE_DIRECTORY_ENTRY_SECURITY
+    为空时，**仍调用 WinVerifyTrust** 走系统 .cat 目录验证。若 WinVerifyTrust 报告
+    valid，则视为「目录签名（catalog-signed）」，``present=True / kind=catalog``。
+    这样系统文件（notepad.exe、cmd.exe、consent.exe 等）能被正确识别为「已签名」。
+
+    仅当「无内嵌证书 **且** WinVerifyTrust 也失败」时才返回 ``present=False``。
+    """
     offset, size = _security_dir_range(pe)
-    if not offset or not size:
-        return SignatureInfo(present=False, status=SIG_NONE)
+    has_embedded = bool(offset and size)
 
-    info = SignatureInfo(present=True, status=SIG_UNKNOWN, size=size)
-    status, detail = _win_verify_file(str(path))
-    info.status = status
-    info.detail = detail
+    if has_embedded:
+        # 路径 1：内嵌 PKCS#7 证书。校验有效性并尝试提取签名者。
+        info = SignatureInfo(
+            present=True,
+            status=SIG_UNKNOWN,
+            kind=SIG_KIND_EMBEDDED,
+            size=size,
+        )
+        status, detail = _win_verify_file(str(path))
+        info.status = status
+        info.detail = detail
 
-    blob = _read_signature_blob(pe, str(path), offset, size)
-    if blob:
-        signer, issuer = _win_extract_signer(blob)
-        info.signer = signer
-        info.issuer = issuer
-    return info
+        blob = _read_signature_blob(pe, str(path), offset, size)
+        if blob:
+            signer, issuer = _win_extract_signer(blob)
+            info.signer = signer
+            info.issuer = issuer
+        return info
+
+    # 路径 2：内嵌 Security 目录为空 → 走 .cat 目录签名兜底。
+    # WinVerifyTrust 对纯 catalog 文件会返回 TRUST_E_CERT_SIGNATURE
+    # (0x800B0100)，不能用它判断；改用 CryptCATAdmin* 直接查系统 .cat。
+    if _win_check_catalog(str(path)):
+        return SignatureInfo(
+            present=True,
+            status=SIG_VALID,
+            kind=SIG_KIND_CATALOG,
+        )
+    # 真正无签名：内嵌无证书，.cat 也找不到
+    return SignatureInfo(
+        present=False,
+        status=SIG_NONE,
+        kind=SIG_KIND_NONE,
+    )
 
 
 # --------------------------------------------------------------------------

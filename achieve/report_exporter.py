@@ -168,6 +168,10 @@ def _signature_text(report: Any, lang: str) -> str:
     detail = _g(sig, "detail", "") or ""
     if detail and status == "invalid":
         text += f" ({detail})"
+    # 标记签名类别（embedded / catalog）。kind 字段由 pe_parser 提供
+    kind = str(_g(sig, "kind", "embedded"))
+    if kind == "catalog":
+        text += f" · {_t('signature.kind_catalog', lang)}"
     return text
 
 

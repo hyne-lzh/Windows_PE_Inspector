@@ -149,6 +149,9 @@
     "signature.signer": "签名者",
     "signature.issuer": "颁发者",
     "signature.verify_failed": "验证不可用：{reason}",
+    "signature.kind_embedded": "内嵌证书",
+    "signature.kind_catalog": "目录签名（catalog-signed，无内嵌证书）",
+    "signature.kind_none": "无签名",
 
     "debug.tab": "调试信息",
     "debug.type": "类型",
@@ -371,6 +374,10 @@
     "signature.unknown": "Signed, validity not verified",
     "signature.signer": "Signer",
     "signature.issuer": "Issuer",
+    "signature.verify_failed": "Verification unavailable: {reason}",
+    "signature.kind_embedded": "Embedded certificate",
+    "signature.kind_catalog": "Catalog-signed (no embedded certificate)",
+    "signature.kind_none": "Not signed",
     "signature.verify_failed": "Verification unavailable: {reason}",
 
     "debug.tab": "Debug info",
