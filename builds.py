@@ -12,6 +12,7 @@
     python builds.py --check-env        # 只看环境、缓存与网络状态
     python builds.py --dry-run          # 只打印编译命令，不真编译
     python builds.py --clean            # 删除编译产物
+    python builds.py --sync-version     # 把 pe_parser 的 __version__ 同步进 .iss 后退出
 
 自动化决策规则（--backend auto，即默认）：
     1) 本地已缓存 MinGW64        → 直接用 MinGW64（零下载）
@@ -31,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -49,6 +51,8 @@ ROOT = Path(__file__).resolve().parent
 ENTRY = ROOT / "main.py"
 OUTPUT_NAME = "PEInspector.exe"
 DIST_DIR = ROOT / "main.dist"
+PARSER = ROOT / "achieve" / "pe_parser.py"   # 版本号单一真相源（__version__）
+ISS_FILE = ROOT / "PEInspectorSetup.iss"     # 版本号由此同步，勿手工改
 
 PY_MIN = (3, 12)
 PY_MAX_EXCLUSIVE = (3, 13)
@@ -581,6 +585,43 @@ def choose_backend(
 # 入口
 # --------------------------------------------------------------------------
 
+def sync_iss_version() -> bool:
+    """把 achieve/pe_parser.py 的 __version__ 同步进 PEInspectorSetup.iss。
+
+    版本号单一真相源在 pe_parser.py（P2-18 根治）；Inno Setup 脚本不能 import Python，
+    故在构建前用正则重写 .iss 的 MyAppVersion 行。已一致时不动文件。
+    """
+    try:
+        src = PARSER.read_text(encoding="utf-8")
+    except OSError as exc:
+        log(f"[x] 读不到 {PARSER}：{exc}")
+        return False
+    m = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', src, re.MULTILINE)
+    if not m:
+        log(f"[x] {PARSER} 里找不到 __version__ 常量")
+        return False
+    version = m.group(1)
+    if not ISS_FILE.is_file():
+        log(f"[x] 找不到 {ISS_FILE}")
+        return False
+    text = ISS_FILE.read_text(encoding="utf-8")
+    new_text, n = re.subn(
+        r'(#define\s+MyAppVersion\s+)"[^"]*"',
+        rf'\g<1>"{version}"',
+        text,
+        count=1,
+    )
+    if n == 0:
+        log(f"[x] {ISS_FILE} 里找不到 #define MyAppVersion 行")
+        return False
+    if new_text == text:
+        log(f"[ok] {ISS_FILE} 版本号已是最新（{version}）")
+        return True
+    ISS_FILE.write_text(new_text, encoding="utf-8")
+    log(f"[ok] 已把 {ISS_FILE} 的 MyAppVersion 同步为 {version}")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Windows PE Inspector 编译脚本（Nuitka / standalone，默认全自动）",
@@ -602,7 +643,12 @@ def main() -> int:
     parser.add_argument("--check-env", action="store_true", help="检查环境、编译器缓存与网络状态")
     parser.add_argument("--dry-run", action="store_true", help="只打印命令，不真正编译")
     parser.add_argument("--clean", action="store_true", help="删除 main.dist / main.build 等产物")
+    parser.add_argument("--sync-version", action="store_true",
+                        help="把 achieve/pe_parser.py 的 __version__ 同步进 PEInspectorSetup.iss 后退出")
     args = parser.parse_args()
+
+    if args.sync_version:
+        return 0 if sync_iss_version() else 1
 
     if args.clean:
         return clean()
@@ -630,6 +676,9 @@ def main() -> int:
             log("")
             advise_network()
         return 0
+
+    # 版本号同步（幂等，已一致则不动文件）：保证 .iss 与 pe_parser.py 的 __version__ 不脱节
+    sync_iss_version()
 
     rule("1/5 环境检查")
     if not check_python():

@@ -3,7 +3,8 @@
 ; Non-commercial use only.
 
 #define MyAppName "PEInspector"
-#define MyAppVersion "0.5.0"
+; 版本号单一真相源是 achieve/pe_parser.py 的 __version__；本行由 builds.py --sync-version 自动同步
+#define MyAppVersion "0.6.0"
 #define MyAppPublisher "My Company, Inc."
 #define MyAppExeName "PEInspector.exe"
 #define DoubleAmp(Value) StringChange(Value, "&", "&&")

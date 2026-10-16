@@ -9,7 +9,7 @@
 
 ## 项目状态
 
-**状态：图形界面可用（V0.5.0），持续打磨中**
+**状态：图形界面可用（V0.6.0），持续打磨中**
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
@@ -25,10 +25,11 @@
 | 加壳检测 | 已完成 | 节区熵值超 7.2 自动标红 + 终端提示 |
 | 采样熵 | 已完成 | 节区 > 50 MB 自动改用 4 MB 采样，实测 13x 加速且熵值与全量一致 |
 | DLL 名称含义 | 已完成 | 词典外置 `assets/dll_meanings.json`（**121 条**）；导入表节点、CLI 与报告均显示 DLL 用途 |
-| 中英双语 | 已完成 | 语言包外置 `assets/i18n.json`（199 键）+ `achieve/i18n.py`；GUI 右上角切换、CLI `--lang`、报告导出同步 |
+| 中英双语 | 已完成 | 语言包外置 `assets/i18n.json`（202 键）+ `achieve/i18n.py`；GUI 右上角切换、CLI `--lang`、报告导出同步 |
 | 打包器识别 | 已完成 | UPX / PyInstaller / Nuitka / VMProtect（另含 Themida / ASPack / MPRESS / PECompact / Enigma / WinUpack），节区名 + 特征字符串双证据 |
-| 数字签名校验 | 已完成 | Authenticode：`WinVerifyTrust` 判有效性 + 提取签名者/颁发者，无签名优雅降级；**只读文件，不执行样本** |
+| 数字签名校验 | 已完成 | Authenticode：`WinVerifyTrust` 判有效性 + 提取签名者/颁发者，无签名优雅降级；**catalog 目录签名识别（P1-8）**：notepad / cmd 等系统文件由系统 `.cat` 提供签名，不再误报「无数字签名」；**只读文件，不执行样本** |
 | 调试信息（PDB） | 已完成 | 解析调试目录 CodeView (RSDS) 记录：PDB 路径 / GUID / Age / 调试类型（`_DEBUG_TYPE_NAMES`）；**`has_pdb` 只认含路径分隔符的完整路径**（裸文件名不计入）；含路径时提示可能泄露编译机信息。GUI 第 2 分页「调试信息」、CLI `--debug`、HTML 区块 + Excel 工作表 |
+| 危险节区识别 | 已完成 | W+X / 异常可写 / 异常节区名 / 可执行节区内存展开四规则；GUI 节区表「可疑原因」列 + 高亮、顶部汇总；CLI 逐条提示；HTML/Excel 同步（实测误报率约 2%） |
 | 打包发布 | 规划中 | Nuitka 编译为免安装 exe（脚本就绪，待发布 Release） |
 | DLL 依赖检测 | 规划中 | 检查系统是否存在、位数是否匹配、递归展开依赖树 |
 | 资源提取 | 规划中 | 图标导出 PNG、版本信息与公司名读取 |
@@ -69,6 +70,8 @@
 - [x] 打包器识别：UPX / PyInstaller / Nuitka / VMProtect 等，节区名 + 特征字符串双证据
 - [x] 数字签名校验：Authenticode 有效性判定 + 签名者 / 颁发者提取（只读，不执行样本）
 - [x] 调试信息（A4）：解析 `DIRECTORY_ENTRY_DEBUG` 的 CodeView (RSDS) 记录，提取 PDB 路径 / GUID / Age / 类型；GUI 新增「调试信息」分页、CLI `--debug`、HTML 区块 + Excel 工作表
+- [x] 危险节区识别（A5）：W+X / 异常可写 / 异常节区名 / 可执行节区内存展开四规则；GUI 节区表「可疑原因」列 + 高亮、顶部汇总；CLI 逐条提示；HTML/Excel 同步
+- [x] catalog 目录签名识别（P1-8）：notepad / cmd 等由系统 `.cat` 签名的文件不再误报「无数字签名」；`SignatureInfo` 新增 `kind` 字段
 
 ### 规划中
 
@@ -120,19 +123,20 @@ Windows_PE_Inspector/
 │   ├── high_risk_apis.json   # 608 条高危 API，按 22 分类 + 严重度分级
 │   ├── dll_meanings.json     # 121 条常见 DLL 用途说明
 │   ├── translations.json     # PE 结构值中英翻译表（含 22 类高危分类英文映射）
-│   └── i18n.json             # 界面文案语言包（157 键 × 中/英）
+│   └── i18n.json             # 界面文案语言包（202 键 × 中/英）
 ├── ui/                    # GUI 专用
 │   ├── __init__.py
-│   └── gui.py             # customtkinter 主窗口（六页 + 后台线程 + 状态栏）
+│   └── gui.py             # customtkinter 主窗口（七页 + 后台线程 + 状态栏）
 ├── cli/                   # CLI 专用
 │   ├── __init__.py
 │   └── cli.py             # 命令行打印 + argparse
 ├── strings.exe            # Sysinternals Strings v2.54（外部字符串提取工具）
 ├── md/
 │   └── nuitka_install.md  # Nuitka 编译指南
-├── PEInspectorSetup.iss   # Inno Setup 安装包脚本（版本号与 README 同步维护）
+├── PEInspectorSetup.iss   # Inno Setup 安装包脚本（版本号由 builds.py 从 pe_parser.py 自动同步）
 ├── 问题.md                 # 项目问题清单（分级 P0~P3）
 ├── 未来计划.md             # 未来功能计划（A/B/C 三组）
+├── A4.md                  # A4 实施方案（调试目录与 PDB 路径，已实施）
 ├── requirements.txt       # 依赖清单（pefile + customtkinter + tkinterdnd2 + openpyxl，精确锁版本）
 ├── LICENSE.txt            # MIT 许可证全文
 ├── .gitignore
@@ -160,6 +164,7 @@ pip install -r requirements.txt
 python main.py                        # 图形界面（双击 exe 等价）
 python cmd_main.py <PE 文件路径>      # 命令行（例：python cmd_main.py notepad.exe --all）
 python cmd_main.py notepad.exe --risks  # 仅查看高危 API
+python cmd_main.py --version            # 查看版本号
 ```
 
 > 双击 `main.py` 或编译后的 `PEInspector.exe` 直接打开 GUI；命令行版本与 GUI 共用同一份解析逻辑。
@@ -168,7 +173,7 @@ python cmd_main.py notepad.exe --risks  # 仅查看高危 API
 
 - **拖放**：把 exe / dll / sys 直接拖到窗口任意位置即可，自动填入路径并开始分析。拖入多个文件时只取第一个；非 PE 文件照常弹出解析失败提示。
 - **浏览即解析**：点「浏览…」按钮在文件对话框里确认后**自动开始分析**（与拖入行为一致）；「开始分析」按钮保留作为手动重跑入口（重试失败 / 重跑同一文件时分析 `_worker.is_alive()` 自动去重）。
-- **搜索**：节区 / 导入表 / 导出表 / 高危 API / 字符串五个分页顶部都有搜索框，输入即时过滤（不区分大小写，匹配任意一列）。导入表里搜 DLL 名会整组保留，搜函数名则只列出命中的函数并自动展开所属 DLL。清空搜索框即还原全部行，**行的风险着色不受过滤影响**。
+- **搜索**：基本信息除外的六个表格分页（调试信息 / 节区 / 导入表 / 导出表 / 高危 API / 字符串）顶部都有搜索框，输入即时过滤（不区分大小写，匹配任意一列）。导入表里搜 DLL 名会整组保留，搜函数名则只列出命中的函数并自动展开所属 DLL。清空搜索框即还原全部行，**行的风险着色不受过滤影响**。
 - **复制**：任意表格里右键 →「复制」/「复制全部」。列表表格按制表符分列，**可直接粘贴进 Excel**。树形分页（导入表 / 字符串）选中 **DLL 或分组父节点**「复制」时，得到该组下**全部子项**（不含标题行，也不含"…其余 N 条"提示行），粘出来是干净数据列；想连标题一起复制就用「复制全部」。状态栏提示实际复制行数。
 
 ## 编译为 exe
@@ -198,6 +203,13 @@ python builds.py               # 全自动编译（自动测速、择优编译�
 | 阶段六 | 依赖分析与发布 | 缺失 DLL 检测与依赖树、Nuitka 发布 Release | 规划中 |
 
 ## 更新日志
+
+### 2026-10-16
+
+- **修复 catalog 目录签名漏检（P1-8）**：notepad.exe / cmd.exe / mshtml.dll 等系统文件的内嵌 Security 目录为空、签名由系统 `.cat` 提供，过去被误判为「无数字签名」。WinVerifyTrust 对纯 catalog 文件返回 `0x800B0100` 无法直接判断，改为新增 `_win_check_catalog()` 走 `CryptCATAdmin*` API 按 SHA1 查系统 `.cat`；`SignatureInfo` 新增 `kind` 字段（embedded / catalog / none），展示层全部 `getattr` 兜底向后兼容。实测 8 样本：catalog 3 例命中、embedded 3 例不变、真无签名 2 例不误判
+- **版本号集中化（P2-18 根治）**：新增单一真相源 `achieve/pe_parser.py` 的 `__version__ = "0.6.0"`；GUI 标题栏与 CLI 新增 `--version` 均引用它；`builds.py` 新增 `--sync-version`（编译前自动幂等同步 `.iss` 的 `MyAppVersion`），安装包版本再也不会和代码脱节
+- **文档同步**：README 状态行 / `未来计划.md` 升至 **V0.6.0**；补登 A5 与 P1-8 成果；修正 i18n 键数（202）、GUI 分页数（七页）、搜索框覆盖分页数（六个）等陈旧描述；`A4.md` 状态翻为「已完成」并随仓库分发（`.gitignore` 显式放行）
+- **命名修正**：`DebugInfo.type_zh` → `type_text`（字段实为「随解析语言本地化的文本」，`_zh` 后缀名不副实；6 处调用点同步）
 
 ### 2026-10-15
 

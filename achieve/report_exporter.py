@@ -288,7 +288,7 @@ def _html_debug(report: Any, lang: str) -> str:
     for d in entries:
         body.append(
             "<tr>"
-            f"<td>{_esc(_g(d, 'type_zh', ''))}</td>"
+            f"<td>{_esc(_g(d, 'type_text', ''))}</td>"
             f"<td>{_esc(_g(d, 'pdb_path', ''))}</td>"
             f"<td>{_esc(_g(d, 'pdb_name', ''))}</td>"
             f"<td>{_esc(_g(d, 'guid', ''))}</td>"
@@ -664,7 +664,7 @@ def _excel_debug(ws, report: Any, lang: str) -> None:
         return
     for d in entries:
         _ws_append(ws, [
-            _g(d, "type_zh", ""), _g(d, "pdb_path", ""), _g(d, "pdb_name", ""),
+            _g(d, "type_text", ""), _g(d, "pdb_path", ""), _g(d, "pdb_name", ""),
             _g(d, "guid", ""), _g(d, "age", ""), _g(d, "timestamp", ""),
         ])
 

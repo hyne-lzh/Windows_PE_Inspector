@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - 环境缺包时的降级路径
 
 from achieve import i18n
 from achieve.i18n import t
-from achieve.pe_parser import PeParseError, human_size, parse_pe, translate
+from achieve.pe_parser import PeParseError, __version__, human_size, parse_pe, translate
 from achieve.report_exporter import export_report
 
 # --------------------------------------------------------------------------
@@ -263,7 +263,7 @@ class MainWindow(*_MainWindowBase):
 
         super().__init__()
 
-        self.title(t("app.title"))
+        self.title(f"{t('app.title')} v{__version__}")
         self.minsize(MIN_W, MIN_H)
         self._center_window()
 
@@ -363,7 +363,7 @@ class MainWindow(*_MainWindowBase):
         i18n.set_language(lang)
 
         # 刷新工具栏静态文本
-        self.title(t("app.title"))
+        self.title(f"{t('app.title')} v{__version__}")
         if self.label_file is not None:
             self.label_file.configure(text=t("toolbar.file_label"))
         self.btn_browse.configure(text=t("toolbar.browse"))
@@ -837,7 +837,7 @@ class MainWindow(*_MainWindowBase):
         # 直接用 DebugInfo 原始值；空值统一显示 "-"（与其它分页的占位风格一致）
         rows = [
             _Row(None, "", (
-                d.type_zh,
+                d.type_text,
                 d.pdb_path or "-",
                 d.pdb_name or "-",
                 d.guid or "-",

@@ -13,7 +13,9 @@
     python cmd_main.py <PE 文件> --signature  # 只看数字签名
     python cmd_main.py <PE 文件> --debug      # 只看调试信息（PDB 路径 / GUID / Age）
     python cmd_main.py <PE 文件> --strings    # 只看字符串
+    python cmd_main.py <PE 文件> --export out.html   # 导出 HTML / Excel 报告（--format 可选）
     python cmd_main.py <PE 文件> --lang en    # 英文输出（默认 zh）
+    python cmd_main.py --version              # 查看版本号
 
 退出码：0 成功 / 1 文件或依赖问题 / 2 不是有效的 PE 文件
 """
@@ -28,6 +30,7 @@ from achieve.i18n import t
 from achieve.pe_parser import (
     ENTROPY_WARN,
     PeParseError,
+    __version__,
     human_size,
     parse_pe,
 )
@@ -203,7 +206,7 @@ def show_debug(r) -> None:
     print(f"{t('debug.type'):<32}{t('debug.pdb_path')}")
     print("-" * 88)
     for d in entries:
-        print(f"{d.type_zh:<32}{d.pdb_path or t('common.dash')}")
+        print(f"{d.type_text:<32}{d.pdb_path or t('common.dash')}")
         # 仅 CodeView 条目有 GUID/Age，单独缩进一行显示，避免主表被撑宽
         detail = []
         if d.guid:
@@ -264,6 +267,7 @@ def main() -> int:
     parser.add_argument("--lang", choices=["zh", "en"], default="zh",
                         help="输出语言 / report language (default: zh)")
     parser.add_argument("--all", action="store_true", help="显示全部信息（默认行为）")
+    parser.add_argument("--version", action="version", version=f"Windows PE Inspector {__version__}")
     args = parser.parse_args()
 
     i18n.set_language(args.lang)

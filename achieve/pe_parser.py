@@ -10,7 +10,9 @@
 - 高危 API 匹配（外置 assets/high_risk_apis.json，608 条 / 22 分类）
 - DLL 用途说明（外置 assets/dll_meanings.json）
 - 打包器识别（UPX / PyInstaller / Nuitka / VMProtect 等）
-- 数字签名校验（Windows Authenticode，绝不执行样本）
+- 数字签名校验（Windows Authenticode，绝不执行样本；含 catalog 目录签名识别）
+- 调试目录解析（PDB 路径 / GUID / Age，A4）
+- 危险节区属性识别（W+X / 异常可写 / 异常节区名 / 内存展开，A5）
 - 中英双语（文本随当前语言生成，见 achieve/i18n.py）
 """
 
@@ -29,6 +31,10 @@ import pefile
 
 from .i18n import get_language, t
 from .strings_extractor import classify_strings, extract_strings
+
+# 版本号单一真相源（P2-18 根治）：README 状态行、未来计划.md、GUI 标题、CLI --version
+# 均引用此处；PEInspectorSetup.iss 由 builds.py --sync-version 自动同步，不再手工维护。
+__version__ = "0.6.0"
 
 # 节区熵值超过该阈值即提示"疑似加壳/加密"（8.0 为理论上限）
 ENTROPY_WARN = 7.2
@@ -395,7 +401,7 @@ class PackerHit:
 class DebugInfo:
     """调试目录条目（A4）。仅 CodeView（debug_type==2）携带 PDB 路径 / GUID / Age。"""
     debug_type: int          # IMAGE_DEBUG_TYPE_* 原始值
-    type_zh: str             # 类型含义（随语言，如 "CodeView 代码视图"）
+    type_text: str             # 类型含义（随语言，如 "CodeView 代码视图"）
     pdb_path: str            # 去尾部 \x00 解码后的完整路径，无则 ""
     pdb_name: str            # 仅文件名（从 pdb_path 提取），无则 ""
     guid: str                # 形如 A56CEAAB-52D1-4269-8EE2-A32D59F492AC，无则 ""
@@ -825,8 +831,8 @@ def _parse_debug(pe, lang: str | None = None) -> list[DebugInfo]:
             debug_type = int(e.struct.Type)
             timestamp = int(e.struct.TimeDateStamp)
             name = _DEBUG_TYPE_NAMES.get(debug_type, "")
-            # 未知类型不在表内：default 兜底显示原始值，保证 type_zh 非空
-            type_zh = translate("DEBUG_TYPE", name,
+            # 未知类型不在表内：default 兜底显示原始值，保证 type_text 非空
+            type_text = translate("DEBUG_TYPE", name,
                                 default=name or str(debug_type), lang=lang)
 
             entry = getattr(e, "entry", None)  # 仅 CodeView 的 entry 含 PDB 字段，其余多为 None
@@ -859,7 +865,7 @@ def _parse_debug(pe, lang: str | None = None) -> list[DebugInfo]:
                 age = int(getattr(entry, "Age", 0) or 0)
             out.append(DebugInfo(
                 debug_type=debug_type,
-                type_zh=type_zh,
+                type_text=type_text,
                 pdb_path=pdb_path,
                 pdb_name=pdb_name,
                 guid=guid,
