@@ -137,6 +137,7 @@ Windows_PE_Inspector/
 ├── 问题.md                 # 项目问题清单（分级 P0~P3）
 ├── 未来计划.md             # 未来功能计划（A/B/C 三组）
 ├── A4.md                  # A4 实施方案（调试目录与 PDB 路径，已实施）
+├── A3.md                  # A3 实施方案（版本信息 RT_VERSION，待实施）
 ├── requirements.txt       # 依赖清单（pefile + customtkinter + tkinterdnd2 + openpyxl，精确锁版本）
 ├── LICENSE.txt            # MIT 许可证全文
 ├── .gitignore
