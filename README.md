@@ -25,7 +25,7 @@
 | 加壳检测 | 已完成 | 节区熵值超 7.2 自动标红 + 终端提示 |
 | 采样熵 | 已完成 | 节区 > 50 MB 自动改用 4 MB 采样，实测 13x 加速且熵值与全量一致 |
 | DLL 名称含义 | 已完成 | 词典外置 `assets/dll_meanings.json`（**121 条**）；导入表节点、CLI 与报告均显示 DLL 用途 |
-| 中英双语 | 已完成 | 语言包外置 `assets/i18n.json`（202 键）+ `achieve/i18n.py`；GUI 右上角切换、CLI `--lang`、报告导出同步 |
+| 中英双语 | 已完成 | 语言包外置 `assets/i18n.json`（205 键）+ `achieve/i18n.py`；GUI 右上角切换、CLI `--lang`、报告导出同步 |
 | 打包器识别 | 已完成 | UPX / PyInstaller / Nuitka / VMProtect（另含 Themida / ASPack / MPRESS / PECompact / Enigma / WinUpack），节区名 + 特征字符串双证据 |
 | 数字签名校验 | 已完成 | Authenticode：`WinVerifyTrust` 判有效性 + 提取签名者/颁发者，无签名优雅降级；**catalog 目录签名识别（P1-8）**：notepad / cmd 等系统文件由系统 `.cat` 提供签名，不再误报「无数字签名」；**只读文件，不执行样本** |
 | 调试信息（PDB） | 已完成 | 解析调试目录 CodeView (RSDS) 记录：PDB 路径 / GUID / Age / 调试类型（`_DEBUG_TYPE_NAMES`）；**`has_pdb` 只认含路径分隔符的完整路径**（裸文件名不计入）；含路径时提示可能泄露编译机信息。GUI 第 2 分页「调试信息」、CLI `--debug`、HTML 区块 + Excel 工作表 |
@@ -115,7 +115,16 @@ Windows_PE_Inspector/
 ├── builds.py              # 全自动编译脚本（环境预检 + 网络诊断 + 测速选后端）
 ├── achieve/               # GUI 与 CLI 共用的实现逻辑（不依赖任何 GUI 库）
 │   ├── __init__.py
-│   ├── pe_parser.py       # 解析核心 + 数据类 + 打包器识别 + 数字签名 + 翻译表
+│   ├── pe_parser.py       # 解析编排入口 parse_pe() + 各子模块符号 re-export（兼容层）
+│   ├── pe_models.py       # 数据类 / PeParseError / LOAD_WARNINGS（依赖链最底层）
+│   ├── pe_translations.py # PE 结构值翻译（内置表 + assets/translations.json 合并）
+│   ├── pe_format.py       # 常量 / 人类可读格式化 / 权限 / 熵值计算
+│   ├── pe_sections.py     # 危险节区属性识别（W+X / 异常可写 / 空名 / 内存展开）
+│   ├── pe_debug.py        # 调试目录解析（PDB 路径 / GUID / Age）
+│   ├── pe_dlls.py         # DLL 用途词典（assets/dll_meanings.json）
+│   ├── pe_risks.py        # 高危 API 词典 + 导入表扫描
+│   ├── pe_packer.py       # 打包器特征识别（UPX / PyInstaller 等 10 种）
+│   ├── pe_signature.py    # 数字签名校验（WinVerifyTrust + catalog 目录签名）
 │   ├── strings_extractor.py  # strings.exe + pefile 双重来源 + 10 类分类
 │   ├── i18n.py            # 中英双语运行时（t(key, lang=...) 通用入口）
 │   └── report_exporter.py    # HTML / Excel 报告导出（含公式注入/转义防护）
@@ -123,18 +132,24 @@ Windows_PE_Inspector/
 │   ├── high_risk_apis.json   # 608 条高危 API，按 22 分类 + 严重度分级
 │   ├── dll_meanings.json     # 121 条常见 DLL 用途说明
 │   ├── translations.json     # PE 结构值中英翻译表（含 22 类高危分类英文映射）
-│   └── i18n.json             # 界面文案语言包（202 键 × 中/英）
+│   └── i18n.json             # 界面文案语言包（205 键 × 中/英）
 ├── ui/                    # GUI 专用
 │   ├── __init__.py
 │   └── gui.py             # customtkinter 主窗口（七页 + 后台线程 + 状态栏）
 ├── cli/                   # CLI 专用
 │   ├── __init__.py
 │   └── cli.py             # 命令行打印 + argparse
+├── tests/                 # 单元测试（unittest，34 用例：GUI 17 + CLI 17）
+│   ├── test_gui.py        # 拖放解析 / 过滤 / 日志路径 / 集成渲染
+│   └── test_cli.py        # show_* 渲染 / 子进程退出码 / 截断一致性
 ├── strings.exe            # Sysinternals Strings v2.54（外部字符串提取工具）
 ├── md/
 │   └── nuitka_install.md  # Nuitka 编译指南
 ├── PEInspectorSetup.iss   # Inno Setup 安装包脚本（版本号由 builds.py 从 pe_parser.py 自动同步）
-├── 问题.md                 # 项目问题清单（分级 P0~P3）
+├── 问题.md                 # 核心层（achieve/）专项问题清单（严重/中等/轻微三级）
+├── gui和cli问题.md         # GUI 与 CLI 专项检查（G1~G7）
+├── 冒烟测试问题.md         # 运行时冒烟测试记录
+├── 扩展.md                 # 可扩展功能调研（同类库对比 + 功能建议）
 ├── 未来计划.md             # 未来功能计划（A/B/C 三组）
 ├── A4.md                  # A4 实施方案（调试目录与 PDB 路径，已实施）
 ├── A3.md                  # A3 实施方案（版本信息 RT_VERSION，待实施）
@@ -145,6 +160,8 @@ Windows_PE_Inspector/
 ```
 
 > 设计原则：解析逻辑**一份真相源**，`parse_pe()` 同时被 GUI 和 CLI 调用；GUI/CLI 专用代码物理隔离。
+> `achieve/` 自 2026-10-23 起按职责拆分为多个 `pe_*.py` 模块（单向依赖、无循环 import），
+> 对外仍经 `achieve.pe_parser` 一个入口访问——`from achieve.pe_parser import X` 的既有写法全部有效。
 
 ## 快速开始
 

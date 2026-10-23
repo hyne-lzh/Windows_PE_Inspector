@@ -1,1523 +1,166 @@
-"""PE 解析核心：数据结构 + 纯解析逻辑。
+"""PE 解析核心：模块编排入口（主入口 + 向后兼容 re-export 层）。
 
-只依赖 pefile 与标准库（数字签名校验在 Windows 上用 ctypes 调系统 API）；
-**禁止 import customtkinter / tkinter**。
-解析入口 parse_pe() 返回 PeReport，供命令行与图形界面共用（单一真相源）。
+架构（2026-10-18 拆分，原单文件 1728 行 → 按职责拆分，本文件保留为唯一入口）
+-----------------------------------------------------------------------------
+::
 
-能力概览
---------
-- 文件头 / 节区（熵值 + 采样）/ 导入表 / 导出表
-- 高危 API 匹配（外置 assets/high_risk_apis.json，608 条 / 22 分类）
-- DLL 用途说明（外置 assets/dll_meanings.json）
-- 打包器识别（UPX / PyInstaller / Nuitka / VMProtect 等）
-- 数字签名校验（Windows Authenticode，绝不执行样本；含 catalog 目录签名识别）
-- 调试目录解析（PDB 路径 / GUID / Age，A4）
-- 危险节区属性识别（W+X / 异常可写 / 异常节区名 / 内存展开，A5）
-- 中英双语（文本随当前语言生成，见 achieve/i18n.py）
+    achieve/
+    ├── pe_parser.py       ← 本文件：parse_pe() 编排 + 全量 re-export（对外唯一入口）
+    ├── pe_models.py       ← 数据结构层：dataclass / PeParseError / LOAD_WARNINGS
+    ├── pe_translations.py ← PE 结构值翻译（内置表 + assets/translations.json）
+    ├── pe_format.py       ← 常量 / 人类可读格式化 / 权限 / 熵值计算
+    ├── pe_sections.py     ← A5：危险节区属性识别
+    ├── pe_debug.py        ← A4：调试目录（PDB 路径 / GUID / Age）
+    ├── pe_dlls.py         ← DLL 用途词典（assets/dll_meanings.json）
+    ├── pe_risks.py        ← 高危 API 词典 + 导入表扫描
+    ├── pe_packer.py       ← 打包器特征识别
+    └── pe_signature.py    ← 数字签名校验（Windows Authenticode，含 catalog）
+
+依赖方向单向：``pe_models`` 在最底层，其余子模块只依赖它（+ i18n /
+strings_extractor），**不出现循环 import**。本文件 import 全部子模块，
+并把它们的公开符号原样 re-export，因此 ``from achieve.pe_parser import X``
+（GUI / CLI / 报告导出 / 测试的既有写法）继续有效，无需改调用方。
+
+安全与工程约束（不可回退）
+--------------------------
+- 只依赖 pefile 与标准库（数字签名校验在 Windows 上用 ctypes 调系统 API）；
+  **禁止 import customtkinter / tkinter**。
+- 纯静态解析：不加载、不执行样本；签名校验只读文件。
+- ``parse_pe()`` 是 GUI / CLI / 导出的**单一真相源**，返回同一 ``PeReport``。
+- ``__version__`` 是版本号单一真相源，**必须字面定义在本文件**——
+  ``builds.py --sync-version`` 用正则读取本文件内容（不 import），
+  改成跨文件引用会导致 .iss 同步失败。
 """
 
 from __future__ import annotations
 
-import datetime
-import json
-import math
-import re
-import struct
-from collections import Counter
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import pefile
 
 from .i18n import get_language, t
+from .pe_debug import (
+    _DEBUG_TYPE_NAMES,
+    _format_guid,
+    _has_path_separator,
+    _parse_debug,
+)
+from .pe_dlls import (
+    _BUILTIN_DLL_MEANINGS,
+    _load_dll_meanings,
+    DLL_MEANINGS,
+    DLL_MEANINGS_PATH,
+    dll_meaning,
+)
+from .pe_format import (
+    ENTROPY_SAMPLE_SIZE,
+    ENTROPY_SAMPLE_THRESHOLD,
+    ENTROPY_WARN,
+    MAX_FILE_SIZE,
+    PACKER_SCAN_LIMIT,
+    SECTION_FLAGS,
+    _entropy_of,
+    _is_future,
+    _sampled_data,
+    fmt_time,
+    human_size,
+    perms_to_zh,
+    section_entropy,
+    section_perms,
+)
+from .pe_models import (
+    LOAD_WARNINGS,
+    DebugInfo,
+    ExportSymbol,
+    ImportDLL,
+    ImportSymbol,
+    PackerHit,
+    PeParseError,
+    PeReport,
+    RiskyImport,
+    SectionInfo,
+    SIG_INVALID,
+    SIG_KIND_CATALOG,
+    SIG_KIND_EMBEDDED,
+    SIG_KIND_NONE,
+    SIG_NONE,
+    SIG_UNKNOWN,
+    SIG_VALID,
+    SignatureInfo,
+)
+from .pe_packer import _PACKER_SIGNATURES, detect_packers
+from .pe_risks import (
+    _BUILTIN_HIGH_RISK_APIS,
+    _load_high_risk_apis,
+    _scan_risky_imports,
+    HIGH_RISK_APIS,
+    RISK_DICT_PATH,
+)
+from .pe_sections import (
+    _check_section_anomaly,
+    _SECTION_NAME_RE,
+    NORMALLY_WRITABLE_SECTIONS,
+    SCN_MEM_EXECUTE,
+    SCN_MEM_READ,
+    SCN_MEM_WRITE,
+    SECTION_EXPAND_RATIO,
+    check_section_anomaly,
+)
+from .pe_signature import (
+    _read_signature_blob,
+    _security_dir_range,
+    _win_check_catalog,
+    _win_extract_signer,
+    _win_verify_file,
+    check_signature,
+)
+from .pe_translations import (
+    _BUILTIN_TRANSLATIONS,
+    _load_translations,
+    _norm_trans_entry,
+    TRANSLATIONS,
+    TRANSLATIONS_PATH,
+    translate,
+    translate_pair,
+    zh_pair,
+)
 from .strings_extractor import classify_strings, extract_strings
 
 # 版本号单一真相源（P2-18 根治）：README 状态行、未来计划.md、GUI 标题、CLI --version
 # 均引用此处；PEInspectorSetup.iss 由 builds.py --sync-version 自动同步，不再手工维护。
 __version__ = "0.6.0"
 
-# 节区熵值超过该阈值即提示"疑似加壳/加密"（8.0 为理论上限）
-ENTROPY_WARN = 7.2
-
-# 采样熵：节区原始数据超过该阈值时改用采样估算（全量算熵在大文件上很慢）
-ENTROPY_SAMPLE_THRESHOLD = 50 * 1024 * 1024   # 50 MB 以上走采样
-ENTROPY_SAMPLE_SIZE = 4 * 1024 * 1024          # 采样 4 MB
-
-# 安全上限：超过该大小直接拒绝解析（本工具要面对恶意样本，不能让它耗尽内存）
-MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024        # 2 GB
-
-# 打包器特征字符串扫描的字符串条数上限（防超大样本卡顿）
-PACKER_SCAN_LIMIT = 20000
-
-# 节区特征位（挑常用的）
-SECTION_FLAGS = (
-    (0x00000020, "CODE"),
-    (0x00000040, "IDATA"),
-    (0x00000080, "UDATA"),
-    (0x20000000, "X"),
-    (0x40000000, "R"),
-    (0x80000000, "W"),
-)
-
-# --------------------------------------------------------------------------
-# 节区属性异常判定（A5：危险节区属性识别）
-# --------------------------------------------------------------------------
-# 权限位常量（IMAGE_SCN_MEM_*）
-SCN_MEM_EXECUTE = 0x20000000
-SCN_MEM_READ = 0x40000000
-SCN_MEM_WRITE = 0x80000000
-
-# 正常可写的节区名白名单——可写但不在名单内才算可疑，避免系统文件误报。
-# 实测依据（扫描 System32 下 400+ DLL / 200 EXE）：
-#   - 常见可写节区：.data(386 次) / .didat(232 次) / .mrdata；
-#   - RT_BSS / RT_DATA 是 MSVC /RTC 运行时检查段；
-#   - .imrsiv 是 MSVC 增量链接（/INCREMENTAL）产生的小节区，系统 EXE 命中 31 次；
-#   - 以上均为正常编译产物。其余可写名仅个位数（.fptable / PAGEDATA / cipolicy
-#     等属第三方自定义节区），保留为"可疑"是合理预期。
-NORMALLY_WRITABLE_SECTIONS = frozenset({
-    ".data", ".bss", ".didat", ".mrdata", ".tls", ".idata", ".data1",
-    "rt_bss", "rt_data", ".imrsiv",
-})
-
-# VirtualSize 超过 RawSize 的倍数阈值。**仅对可执行节区判定**：
-# 数据节区（.data 等）常因预留大块未初始化缓冲区而大幅展开——实测 AcLayers.dll
-# 的 .data 达 156 倍（正常），故对数据节区判定必然误报；而可执行节区在磁盘上
-# 几乎不占空间、内存中却很大，才是典型的"运行时解压出代码"（加壳）特征。
-SECTION_EXPAND_RATIO = 5.0
-
-# 合规节区名：字母/数字/下划线/点/连字符/美元符（PE 常见）
-_SECTION_NAME_RE = re.compile(r"^[\w.$-]+$")
-
-# --------------------------------------------------------------------------
-# 调试目录类型（A4：IMAGE_DEBUG_TYPE_*）
-# --------------------------------------------------------------------------
-# pefile 未内置这些常量（实测源码搜不到），故自建映射表。
-# 值为 PE 规范标准名，作 translate("DEBUG_TYPE", 名, ...) 的键。
-# 注意：部分资料把 14 写作 "ILO" 系笔误，规范名为 ILTG（增量链接时间戳）；
-# 仅 2(CodeView) 携带 PDB 路径/GUID/Age，其余多为元信息条目。
-_DEBUG_TYPE_NAMES: dict[int, str] = {
-    0: "Unknown",
-    1: "Coff",
-    2: "CodeView",
-    3: "FPO",
-    4: "Misc",
-    5: "Exception",
-    6: "Fixup",
-    7: "OmapToSrc",
-    8: "OmapFromSrc",
-    9: "Borland",
-    10: "Reserved10",
-    11: "CLSID",
-    12: "VCFeature",
-    13: "POGO",
-    14: "ILTG",
-    15: "MPX",
-    16: "Repro",
-    20: "ExDllCharacteristics",
-}
-
-# 通用翻译表（PE 各分类的英文标识 → 各语言说明）
-# --------------------------------------------------------------------------
-# 每个条目的值统一为 {语言代码: 文本}，例如 {"zh": "代码", "en": "Code"}。
-# 新增分类只需往 _BUILTIN_TRANSLATIONS 加一个键，然后调用
-# translate("分类", key, lang=...) 即可。
-# --------------------------------------------------------------------------
-_BUILTIN_TRANSLATIONS: dict[str, dict[str, dict[str, str]]] = {
-    "SECTION_FLAGS": {
-        "CODE": {"zh": "代码", "en": "Code"},
-        "IDATA": {"zh": "已初始化数据", "en": "Initialized data"},
-        "UDATA": {"zh": "未初始化数据", "en": "Uninitialized data"},
-        "X": {"zh": "可执行", "en": "Executable"},
-        "R": {"zh": "可读", "en": "Readable"},
-        "W": {"zh": "可写", "en": "Writable"},
-    },
-    "MACHINE": {
-        "IMAGE_FILE_MACHINE_AMD64": {"zh": "x64 64 位", "en": "x64 (64-bit)"},
-        "IMAGE_FILE_MACHINE_I386": {"zh": "x86 32 位", "en": "x86 (32-bit)"},
-        "IMAGE_FILE_MACHINE_IA64": {"zh": "IA64 安腾", "en": "IA64 Itanium"},
-        "IMAGE_FILE_MACHINE_ARM": {"zh": "ARM 32 位", "en": "ARM (32-bit)"},
-        "IMAGE_FILE_MACHINE_ARM64": {"zh": "ARM64 64 位", "en": "ARM64 (64-bit)"},
-        "IMAGE_FILE_MACHINE_ARMNT": {"zh": "ARM Thumb-2", "en": "ARM Thumb-2"},
-        "IMAGE_FILE_MACHINE_THUMB": {"zh": "ARM Thumb", "en": "ARM Thumb"},
-        "IMAGE_FILE_MACHINE_ALPHA": {"zh": "Alpha", "en": "Alpha"},
-        "IMAGE_FILE_MACHINE_MIPS16": {"zh": "MIPS 16 位", "en": "MIPS (16-bit)"},
-        "IMAGE_FILE_MACHINE_SH3": {"zh": "SuperH 32 位", "en": "SuperH (32-bit)"},
-        "IMAGE_FILE_MACHINE_SH3E": {"zh": "SuperH 32 位增强", "en": "SuperH (32-bit, enhanced)"},
-        "IMAGE_FILE_MACHINE_SH4": {"zh": "SuperH 64 位", "en": "SuperH (64-bit)"},
-        "IMAGE_FILE_MACHINE_SH5": {"zh": "SuperH 64 位增强", "en": "SuperH (64-bit, enhanced)"},
-        "IMAGE_FILE_MACHINE_RISCV32": {"zh": "RISC-V 32 位", "en": "RISC-V (32-bit)"},
-        "IMAGE_FILE_MACHINE_RISCV64": {"zh": "RISC-V 64 位", "en": "RISC-V (64-bit)"},
-        "IMAGE_FILE_MACHINE_RISCV128": {"zh": "RISC-V 128 位", "en": "RISC-V (128-bit)"},
-        "IMAGE_FILE_MACHINE_LOONGARCH32": {"zh": "龙芯 LoongArch 32 位", "en": "LoongArch (32-bit)"},
-        "IMAGE_FILE_MACHINE_LOONGARCH64": {"zh": "龙芯 LoongArch 64 位", "en": "LoongArch (64-bit)"},
-        "IMAGE_FILE_MACHINE_UNKNOWN": {"zh": "未知架构", "en": "Unknown architecture"},
-    },
-    "SUBSYSTEM": {
-        "IMAGE_SUBSYSTEM_UNKNOWN": {"zh": "未知子系统", "en": "Unknown subsystem"},
-        "IMAGE_SUBSYSTEM_NATIVE": {"zh": "原生内核驱动", "en": "Native (kernel driver)"},
-        "IMAGE_SUBSYSTEM_WINDOWS_GUI": {"zh": "Windows 图形界面程序", "en": "Windows GUI"},
-        "IMAGE_SUBSYSTEM_WINDOWS_CUI": {"zh": "Windows 控制台程序", "en": "Windows console"},
-        "IMAGE_SUBSYSTEM_OS2_CUI": {"zh": "OS/2 控制台程序", "en": "OS/2 console"},
-        "IMAGE_SUBSYSTEM_POSIX_CUI": {"zh": "POSIX 控制台程序", "en": "POSIX console"},
-        "IMAGE_SUBSYSTEM_NATIVE_WINDOWS": {"zh": "原生 Windows", "en": "Native Windows"},
-        "IMAGE_SUBSYSTEM_WINDOWS_CE_GUI": {"zh": "Windows CE 图形界面", "en": "Windows CE GUI"},
-        "IMAGE_SUBSYSTEM_EFI_APPLICATION": {"zh": "EFI 应用程序", "en": "EFI application"},
-        "IMAGE_SUBSYSTEM_EFI_BOOT_SERVICE_DRIVER": {"zh": "EFI 引导服务驱动", "en": "EFI boot-service driver"},
-        "IMAGE_SUBSYSTEM_EFI_RUNTIME_DRIVER": {"zh": "EFI 运行时驱动", "en": "EFI runtime driver"},
-        "IMAGE_SUBSYSTEM_EFI_ROM": {"zh": "EFI ROM 映像", "en": "EFI ROM image"},
-        "IMAGE_SUBSYSTEM_XBOX": {"zh": "Xbox 游戏机", "en": "Xbox"},
-        "IMAGE_SUBSYSTEM_WINDOWS_BOOT_APPLICATION": {"zh": "Windows 引导应用程序", "en": "Windows boot application"},
-    },
-    # A4：调试目录类型。键为 _DEBUG_TYPE_NAMES 的规范标准名（如 "CodeView"）
-    "DEBUG_TYPE": {
-        "Unknown": {"zh": "未知类型", "en": "Unknown"},
-        "Coff": {"zh": "COFF 调试信息", "en": "COFF"},
-        "CodeView": {"zh": "CodeView 代码视图", "en": "CodeView"},
-        "FPO": {"zh": "FPO 帧指针省略", "en": "Frame pointer omission"},
-        "Misc": {"zh": "杂项调试信息", "en": "Miscellaneous"},
-        "Exception": {"zh": "异常处理调试信息", "en": "Exception"},
-        "Fixup": {"zh": "重定位调试信息", "en": "Fixup"},
-        "OmapToSrc": {"zh": "OmapToSrc 源映射", "en": "Omap to source"},
-        "OmapFromSrc": {"zh": "OmapFromSrc 源映射", "en": "Omap from source"},
-        "Borland": {"zh": "Borland 调试信息", "en": "Borland"},
-        "Reserved10": {"zh": "保留类型（10）", "en": "Reserved (10)"},
-        "CLSID": {"zh": "类标识符（CLSID）", "en": "CLSID"},
-        "VCFeature": {"zh": "VC 特性", "en": "VC feature"},
-        "POGO": {"zh": "配置文件引导优化", "en": "Profile-guided optimization"},
-        "ILTG": {"zh": "增量链接时间戳（ILTG）", "en": "Incremental link time stamp"},
-        "MPX": {"zh": "内存保护扩展（MPX）", "en": "Memory protection extensions"},
-        "Repro": {"zh": "可复现构建", "en": "Reproducible build"},
-        "ExDllCharacteristics": {"zh": "DLL 特性扩展", "en": "Extended DLL characteristics"},
-    },
-    "RISK_CATEGORY": {
-        "进程注入": {"zh": "进程注入", "en": "Process injection"},
-        "进程操作": {"zh": "进程操作", "en": "Process operations"},
-        "DLL 操作": {"zh": "DLL 操作", "en": "DLL operations"},
-        "内存操作": {"zh": "内存操作", "en": "Memory operations"},
-        "注册表": {"zh": "注册表", "en": "Registry"},
-        "网络": {"zh": "网络", "en": "Network"},
-        "文件": {"zh": "文件", "en": "File"},
-        "加密": {"zh": "加密", "en": "Cryptography"},
-        "反调试": {"zh": "反调试", "en": "Anti-debugging"},
-        "键盘记录": {"zh": "键盘记录", "en": "Keylogging"},
-        "屏幕截图": {"zh": "屏幕截图", "en": "Screen capture"},
-        "自启动": {"zh": "自启动", "en": "Persistence"},
-        "信息收集": {"zh": "信息收集", "en": "Information gathering"},
-        "凭据窃取": {"zh": "凭据窃取", "en": "Credential theft"},
-        "防御规避": {"zh": "防御规避", "en": "Defense evasion"},
-        "横向移动": {"zh": "横向移动", "en": "Lateral movement"},
-        "系统破坏": {"zh": "系统破坏", "en": "System destruction"},
-        "音视频采集": {"zh": "音视频采集", "en": "Audio/video capture"},
-        "内核操作": {"zh": "内核操作", "en": "Kernel operations"},
-        "内核钩子": {"zh": "内核钩子", "en": "Kernel hooks"},
-        "驱动加载": {"zh": "驱动加载", "en": "Driver loading"},
-        "网络过滤": {"zh": "网络过滤", "en": "Network filtering"},
-    },
-    # 预留分类占位（未来按需启用）
-    "DLL": {},
-}
-
-# 外置翻译文件路径（项目根 assets/ 下，用户可自行编辑扩充，无需改代码）
-TRANSLATIONS_PATH = Path(__file__).resolve().parent.parent / "assets" / "translations.json"
-
-# 加载期告警：以 (i18n_key, kwargs) 形式记录，避免"静默降级"——见 _load_* 函数。
-# 由 _build_report 翻译后并入 report.warnings。
-_LOAD_WARNINGS: list[tuple[str, dict]] = []
-
-
-def _norm_trans_entry(value) -> dict[str, str]:
-    """把外置翻译条目归一化为 {lang: text}。
-
-    - 新格式：{"zh": "...", "en": "..."} → 原样取字符串值
-    - 旧格式："中文" → 视为中文（向后兼容）
-    - 其它：忽略
-    """
-    if isinstance(value, dict):
-        out: dict[str, str] = {}
-        for lang, text in value.items():
-            if isinstance(text, str) and text:
-                out[str(lang)] = text
-        return out
-    if isinstance(value, str) and value:
-        return {"zh": value}
-    return {}
-
-
-def _load_translations() -> dict[str, dict[str, dict[str, str]]]:
-    """从 assets/translations.json 合并到内置翻译表。
-
-    外置的目的：让用户能自行编辑/扩充词条，不必改动 Python 代码。
-    加载失败时**记录告警并回退内置**（不再静默 pass），告警会进入
-    report.warnings，分析员能明确知道自定义词条未生效。
-    合并策略：内置为底，外置按分类覆盖。
-    """
-    merged: dict[str, dict[str, dict[str, str]]] = {
-        cat: {key: dict(val) for key, val in bucket.items()}
-        for cat, bucket in _BUILTIN_TRANSLATIONS.items()
-    }
-    try:
-        with TRANSLATIONS_PATH.open(encoding="utf-8") as fh:
-            raw = json.load(fh)
-    except FileNotFoundError:
-        # 外置文件本就是可选项，缺失不告警
-        return merged
-    except (OSError, json.JSONDecodeError) as exc:
-        _LOAD_WARNINGS.append(("warn.trans_load_failed", {"err": exc}))
-        return merged
-
-    if not isinstance(raw, dict):
-        _LOAD_WARNINGS.append(("warn.trans_bad_root", {}))
-        return merged
-
-    for cat, items in raw.items():
-        if not isinstance(items, dict):
-            continue
-        bucket = merged.setdefault(str(cat), {})
-        for key, value in items.items():
-            norm = _norm_trans_entry(value)
-            if norm:
-                bucket.setdefault(str(key), {}).update(norm)
-    return merged
-
-
-# 全局翻译表（模块加载时一次性载入）
-TRANSLATIONS: dict[str, dict[str, dict[str, str]]] = _load_translations()
-
-
-def translate(category: str, key: str, default: str = "", lang: str | None = None) -> str:
-    """通用翻译查找：translate("分类", "键", lang="en")。
-
-    查找顺序：指定语言 → 中文 → default。任一步命中即返回。
-    """
-    if not category or not key:
-        return default
-    lang = lang or get_language()
-    bucket = TRANSLATIONS.get(category)
-    if not bucket:
-        return default
-    entry = bucket.get(key)
-    if not entry:
-        return default
-    return entry.get(lang) or entry.get("zh") or default
-
-
-def translate_pair(category: str, key: str, lang: str | None = None) -> str:
-    """通用「英文标识（说明）」拼接，说明随当前语言变化。
-
-    例：中文 → "IMAGE_FILE_MACHINE_AMD64（x64 64 位）"
-        英文 → "IMAGE_FILE_MACHINE_AMD64 (x64 (64-bit))"
-    """
-    if not key:
-        return ""
-    lang = lang or get_language()
-    text = translate(category, key, lang=lang)
-    if not text:
-        return key
-    left, right = ("（", "）") if lang == "zh" else (" (", ")")
-    return f"{key}{left}{text}{right}"
-
-
-def zh_pair(english: str, chinese: str) -> str:
-    """把英文标识与中文说明拼成「英文（中文）」；没有中文时只返回英文。
-
-    保留该函数仅为向后兼容（老代码用鸭子类型调用）；
-    新代码请直接用 translate_pair("分类", key, lang=...)。
-    """
-    english = english or ""
-    chinese = chinese or ""
-    return f"{english}（{chinese}）" if chinese else english
-
-
-class PeParseError(Exception):
-    """解析失败。message 是面向用户的中文文案；exit_code 供命令行返回。"""
-
-    def __init__(self, message: str, exit_code: int = 1) -> None:
-        super().__init__(message)
-        self.exit_code = exit_code
-
-
-@dataclass
-class ImportSymbol:
-    name: str | None            # 有名导入
-    ordinal: int | None         # 序号导入（name 为 None 时使用）
-
-    @property
-    def display(self) -> str:
-        return self.name or f"Ordinal#{self.ordinal}"
-
-
-@dataclass
-class ImportDLL:
-    dll: str
-    symbols: list[ImportSymbol] = field(default_factory=list)
-    meaning: str = ""           # DLL 用途说明（来自 assets/dll_meanings.json，可能为空）
-
-
-@dataclass
-class ExportSymbol:
-    ordinal: int
-    rva: int
-    name: str | None            # None 表示"(仅序号)"
-    forwarder: str | None       # None 表示无转发
-
-
-@dataclass
-class SectionInfo:
-    name: str                   # 解码失败或为空 → "(无名)"
-    virtual_size: int
-    raw_size: int
-    entropy: float
-    characteristics: int
-    perms: str                  # 缩写如 "CODEXR"
-    perms_zh: str               # 权限含义（随当前语言，如 "代码·可执行·可读"）
-    is_suspicious: bool         # entropy > ENTROPY_WARN
-    entropy_sampled: bool = False  # True = 该熵值是采样估算（节区过大，非全量）
-    suspicious_reasons: list[str] = field(default_factory=list)  # A5：属性异常原因（随语言）
-
-
-@dataclass
-class RiskyImport:
-    """高危 API 导入：分类、风险等级、简要说明。
-
-    注意：``category`` 与 ``risk_level`` 是**数据值**（恒为中文），
-    展示层用 translate("RISK_CATEGORY", ...) / i18n t("risk.<等级>") 翻译。
-    """
-    dll: str
-    function: str
-    category: str               # 如 "进程注入" / "网络"（数据值，不翻译）
-    risk_level: str             # "严重" / "中等" / "低"（数据值，不翻译）
-    description: str            # 中文说明
-
-
-@dataclass
-class PackerHit:
-    """命中的打包器特征。``name`` 是品牌名（不翻译），证据分节区与字符串两类。"""
-    name: str
-    sections: list[str] = field(default_factory=list)   # 命中的节区名
-    strings: list[str] = field(default_factory=list)     # 命中的特征字符串
-
-
-@dataclass
-class DebugInfo:
-    """调试目录条目（A4）。仅 CodeView（debug_type==2）携带 PDB 路径 / GUID / Age。"""
-    debug_type: int          # IMAGE_DEBUG_TYPE_* 原始值
-    type_text: str             # 类型含义（随语言，如 "CodeView 代码视图"）
-    pdb_path: str            # 去尾部 \x00 解码后的完整路径，无则 ""
-    pdb_name: str            # 仅文件名（从 pdb_path 提取），无则 ""
-    guid: str                # 形如 A56CEAAB-52D1-4269-8EE2-A32D59F492AC，无则 ""
-    age: int                 # 无则 0
-    timestamp: int           # 调试信息自身的时间戳
-    cv_signature: str        # "RSDS" / "NB10" / ""
-
-
-# 签名状态取值
-SIG_NONE = "none"
-SIG_VALID = "valid"
-SIG_INVALID = "invalid"
-SIG_UNKNOWN = "unknown"
-
-# 签名类别（kind）：嵌入式证书 vs 操作系统目录签名（catalog-signed）
-SIG_KIND_NONE = "none"           # 无签名
-SIG_KIND_EMBEDDED = "embedded"   # 内嵌 PKCS#7 证书（IMAGE_DIRECTORY_ENTRY_SECURITY 非空）
-SIG_KIND_CATALOG = "catalog"     # 仅目录签名（内嵌 Security 目录为空，由 WinVerifyTrust 凭 .cat 校验通过）
-
-
-@dataclass
-class SignatureInfo:
-    """数字签名信息。status 取值见 SIG_* 常量；kind 取值见 SIG_KIND_* 常量。
-
-    关键：``present=True`` 表示**至少在 Windows 层面**该 PE 已被认为「已签名」——
-    包括内嵌签名与目录签名（catalog-signed）。仅当 WinVerifyTrust 报告无效或不可用，
-    且内嵌 Security 目录也为空时，``present=False``。
-    """
-    present: bool = False
-    status: str = SIG_NONE
-    kind: str = SIG_KIND_NONE     # 签名类别，见 SIG_KIND_*
-    signer: str = ""
-    issuer: str = ""
-    detail: str = ""            # 失败原因 / 错误码
-    size: int = 0               # 签名数据大小（字节）
-
-
-@dataclass
-class PeReport:
-    path: str
-    file_size: int
-    magic: int
-    kind: str
-    bits: int
-    machine: int
-    machine_name: str
-    machine_zh: str              # 架构说明（随当前语言）
-    subsystem: int
-    subsystem_name: str
-    subsystem_zh: str            # 子系统说明（随当前语言）
-    time_date_stamp: int
-    compile_time_text: str
-    time_in_future: bool
-    entry_point_rva: int
-    image_base: int
-    checksum: int
-    num_sections: int
-    num_data_directories: int
-    sections: list[SectionInfo] = field(default_factory=list)
-    imports: list[ImportDLL] = field(default_factory=list)
-    exports: list[ExportSymbol] = field(default_factory=list)
-    risky_imports: list[RiskyImport] = field(default_factory=list)
-    strings_summary: dict = field(default_factory=dict)  # extract_strings 完整结果（含来源/失败原因）
-    string_count: int = 0                                # 合并去重后的字符串总数
-    string_classes: dict = field(default_factory=dict)   # classify_strings 分类结果
-    packers: list[PackerHit] = field(default_factory=list)  # 命中的打包器特征
-    signature: SignatureInfo = field(default_factory=SignatureInfo)  # 数字签名
-    has_imports: bool = False
-    has_exports: bool = False
-    has_risky_imports: bool = False
-    has_packers: bool = False
-    suspicious_sections: bool = False
-    suspicious_section_count: int = 0   # A5：属性异常的节区个数
-    debug_entries: list[DebugInfo] = field(default_factory=list)  # A4：调试目录条目
-    has_pdb: bool = False                       # 是否含至少一条可用 PDB 路径
-    pdb_paths: list[str] = field(default_factory=list)  # 便于导出/检索
-    lang: str = "zh"             # 生成本报告时使用的语言
-    warnings: list[str] = field(default_factory=list)
-
-
-# --------------------------------------------------------------------------
-# 纯格式工具
-# --------------------------------------------------------------------------
-
-def human_size(n: int) -> str:
-    if n < 1024:
-        return f"{n} B"
-    if n < 1024 * 1024:
-        return f"{n / 1024:.1f} KB"
-    if n < 1024 * 1024 * 1024:
-        return f"{n / 1024 / 1024:.1f} MB"
-    return f"{n / 1024 / 1024 / 1024:.2f} GB"
-
-
-def _is_future(stamp: int) -> bool:
-    """判断时间戳是否晚于当前时间（含同年内未来日期，不只看年份）。"""
-    if not stamp:
-        return False
-    try:
-        dt = datetime.datetime.fromtimestamp(stamp, tz=datetime.timezone.utc)
-    except (OverflowError, OSError, ValueError):
-        return False
-    return dt > datetime.datetime.now(datetime.timezone.utc)
-
-
-def fmt_time(stamp: int, lang: str | None = None) -> str:
-    lang = lang or get_language()
-    if not stamp:
-        return t("time.unset", lang=lang)
-    try:
-        dt = datetime.datetime.fromtimestamp(stamp, tz=datetime.timezone.utc)
-    except (OverflowError, OSError, ValueError):
-        return t("time.invalid", lang=lang, stamp=stamp)
-    text = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-    if _is_future(stamp):
-        text += t("time.future_suffix", lang=lang)
-    return text
-
-
-def section_perms(ch: int) -> str:
-    return "".join(name for bit, name in SECTION_FLAGS if ch & bit) or "-"
-
-
-def perms_to_zh(perms: str, lang: str | None = None) -> str:
-    """把权限缩写翻译为含义文本，例如 "CODEXR" → "代码·可执行·可读"。
-
-    按最长优先匹配多字符代码（UDATA 5 > IDATA 5 > CODE 4 > X/R/W 1）。
-    翻译走通用 translate("SECTION_FLAGS", code, lang=lang)。
-    """
-    if not perms or perms == "-":
-        return "-"
-    lang = lang or get_language()
-    bucket = TRANSLATIONS.get("SECTION_FLAGS", {})
-    # 按字符长度从长到短排序（UDATA/IDATA 5 > CODE 4 > X/R/W 1），保证贪婪匹配
-    codes_by_len = sorted(bucket.keys(), key=len, reverse=True)
-    parts: list[str] = []
-    remaining = perms
-    while remaining:
-        matched = False
-        for code in codes_by_len:
-            if remaining.startswith(code):
-                parts.append(translate("SECTION_FLAGS", code, default=code, lang=lang))
-                remaining = remaining[len(code):]
-                matched = True
-                break
-        if not matched:
-            # 理论上不会发生（section_perms 只产出已知代码），但兜底保留单字符
-            parts.append(remaining[0])
-            remaining = remaining[1:]
-    return "·".join(parts)
-
-
-def check_section_anomaly(name: str, characteristics: int,
-                          virtual_size: int, raw_size: int,
-                          lang: str | None = None) -> list[str]:
-    """判定单个节区的属性异常，返回可疑原因列表（空列表 = 正常）。
-
-    规则（A5）：
-      1. 可写且可执行（W+X）        —— 自修改代码 / 加壳释放代码的典型特征；
-      2. 可写但节区名不在正常白名单 —— 该节区本不该可写；
-      3. 节区名为空或含非常规字符    —— 可能被篡改；
-      4. VirtualSize > RawSize × 5  —— 内存展开远大于磁盘大小，加壳特征。
-
-    ``name`` 传**原始**节区名（未做 "(无名)" 兜底），以便识别空名。
-    文案随 ``lang``，与 ``perms_zh`` 的做法一致。
-    """
-    lang = lang or get_language()
-    reasons: list[str] = []
-
-    writable = bool(characteristics & SCN_MEM_WRITE)
-    executable = bool(characteristics & SCN_MEM_EXECUTE)
-    lower = (name or "").lower()
-
-    # 规则 1：W+X
-    if writable and executable:
-        reasons.append(t("section.suspect_wx", lang=lang))
-
-    # 规则 2：可写且不在白名单（规则 1 已报过就不重复）
-    if writable and not executable and lower not in NORMALLY_WRITABLE_SECTIONS:
-        reasons.append(t("section.suspect_writable", lang=lang))
-
-    # 规则 3：节区名为空或非常规字符
-    if not name or not _SECTION_NAME_RE.match(name):
-        reasons.append(t("section.suspect_name", lang=lang))
-
-    # 规则 4：可执行节区内存展开远大于磁盘大小（加壳特征）
-    # raw_size 为 0 时不判（避免除零，也避免把纯 .bss 类节区误报）
-    if executable and raw_size > 0 and virtual_size > raw_size * SECTION_EXPAND_RATIO:
-        reasons.append(t("section.suspect_expand", lang=lang))
-
-    return reasons
-
-
-# 兼容旧引用（内部私有别名，新代码请用 check_section_anomaly）
-_check_section_anomaly = check_section_anomaly
-
-
-# --------------------------------------------------------------------------
-# 采样熵（性能：超大节区不再全量计算）
-# --------------------------------------------------------------------------
-
-def _entropy_of(data: bytes) -> float:
-    """计算字节序列的香农熵（0~8）。与 pefile 的 get_entropy() 算法一致。"""
-    if not data:
-        return 0.0
-    counts = Counter(data)
-    total = len(data)
-    ent = 0.0
-    for c in counts.values():
-        p = c / total
-        ent -= p * math.log2(p)
-    return ent
-
-
-def _sampled_data(data: bytes, sample_size: int) -> bytes:
-    """从大块数据里采样：取头、中、尾三段各 sample_size/3，兼顾代表性与速度。"""
-    if len(data) <= sample_size:
-        return data
-    third = max(1, sample_size // 3)
-    head = data[:third]
-    mid_start = (len(data) - third) // 2
-    mid = data[mid_start:mid_start + third]
-    tail = data[-third:]
-    return head + mid + tail
-
-
-def section_entropy(section, sample_threshold: int = ENTROPY_SAMPLE_THRESHOLD) -> tuple[float, bool]:
-    """计算节区熵值，返回 (熵值, 是否采样)。
-
-    - 节区数据 <= sample_threshold（默认 50 MB）：全量计算，结果精确
-    - 超过阈值：改用 4 MB 采样估算，避免大文件上几十秒的卡顿
-    """
-    try:
-        data = section.get_data()
-    except Exception:  # noqa: BLE001
-        # get_data 可能失败（如 SizeOfRawData 为 0），回退到 pefile 自带实现
-        try:
-            return float(section.get_entropy()), False
-        except Exception:  # noqa: BLE001
-            return 0.0, False
-
-    if len(data) > sample_threshold:
-        return _entropy_of(_sampled_data(data, ENTROPY_SAMPLE_SIZE)), True
-    return _entropy_of(data), False
-
-
-# --------------------------------------------------------------------------
-# 高危 API 词典（key 用小写，匹配时统一小写化）
-# 值：(分类, 风险等级, 说明)
-# --------------------------------------------------------------------------
-
-# 内置兜底词典（仅在 assets/high_risk_apis.json 缺失/损坏时启用）
-_BUILTIN_HIGH_RISK_APIS: dict[str, tuple[str, str, str]] = {
-    # ---- 进程注入（严重）----
-    "createremotethread":    ("进程注入", "严重", "在远程进程中创建线程，常用于代码注入"),
-    "ntcreatethreadex":      ("进程注入", "严重", "原生层创建远程线程"),
-    "virtualallocex":        ("进程注入", "严重", "在远程进程中分配内存"),
-    "writeprocessmemory":    ("进程注入", "严重", "写入远程进程内存"),
-    "readprocessmemory":     ("进程注入", "严重", "读取远程进程内存"),
-    "openprocess":           ("进程注入", "中等", "打开远程进程句柄"),
-
-    # ---- 进程操作 ----
-    "terminateprocess":      ("进程操作", "中等", "终止指定进程"),
-    "createprocessa":        ("进程操作", "低",   "创建新进程（ANSI）"),
-    "createprocessw":        ("进程操作", "低",   "创建新进程（Unicode）"),
-    "shellexecutea":         ("进程操作", "低",   "执行外部命令（ANSI）"),
-    "shellexecutew":         ("进程操作", "低",   "执行外部命令（Unicode）"),
-    "winexec":               ("进程操作", "低",   "执行外部命令"),
-    "createprocessasusera":  ("进程操作", "中等", "以其他用户身份创建进程"),
-    "createprocessasuserw":  ("进程操作", "中等", "以其他用户身份创建进程"),
-
-    # ---- DLL 操作 ----
-    "loadlibrarya":          ("DLL 操作", "中等", "动态加载 DLL（ANSI）"),
-    "loadlibraryw":          ("DLL 操作", "中等", "动态加载 DLL（Unicode）"),
-    "loadlibraryexa":        ("DLL 操作", "中等", "从指定路径加载 DLL（ANSI）"),
-    "loadlibraryexw":        ("DLL 操作", "中等", "从指定路径加载 DLL（Unicode）"),
-    "getprocaddress":        ("DLL 操作", "中等", "获取 DLL 函数地址"),
-    "getmodulehandlea":      ("DLL 操作", "低",   "获取模块句柄（ANSI）"),
-    "getmodulehandlew":      ("DLL 操作", "低",   "获取模块句柄（Unicode）"),
-    "ldrloaddll":            ("DLL 操作", "中等", "原生层加载 DLL"),
-    "freelibrary":           ("DLL 操作", "低",   "释放 DLL"),
-    "freelibraryandexitthread": ("DLL 操作", "严重", "释放 DLL 并退出线程，常用于注入后退出宿主"),
-
-    # ---- 内存操作 ----
-    "virtualprotect":        ("内存操作", "中等", "修改内存页面保护属性"),
-    "virtualprotectex":      ("内存操作", "中等", "修改远程进程内存保护属性"),
-    "virtualalloc":          ("内存操作", "低",   "分配虚拟内存"),
-    "virtualfree":           ("内存操作", "低",   "释放虚拟内存"),
-    "virtualquery":          ("内存操作", "低",   "查询虚拟内存信息"),
-    "heapcreate":            ("内存操作", "低",   "创建堆"),
-    "heapalloc":             ("内存操作", "低",   "堆内存分配"),
-    "virtualqueryex":        ("内存操作", "低",   "查询远程进程虚拟内存"),
-
-    # ---- 注册表 ----
-    "regsetvalueexa":        ("注册表",   "中等", "设置注册表值（ANSI）"),
-    "regsetvalueexw":        ("注册表",   "中等", "设置注册表值（Unicode），常用于自启动"),
-    "regcreatekeyexa":       ("注册表",   "中等", "创建注册表键（ANSI）"),
-    "regcreatekeyexw":       ("注册表",   "中等", "创建注册表键（Unicode）"),
-    "regdeletekeya":         ("注册表",   "中等", "删除注册表键（ANSI）"),
-    "regdeletekeyw":         ("注册表",   "中等", "删除注册表键（Unicode）"),
-    "regdeletevaluea":       ("注册表",   "中等", "删除注册表值（ANSI）"),
-    "regdeletevaluew":       ("注册表",   "中等", "删除注册表值（Unicode）"),
-    "regopenkeyexa":         ("注册表",   "低",   "打开注册表键（ANSI）"),
-    "regopenkeyexw":         ("注册表",   "低",   "打开注册表键（Unicode）"),
-    "regenumkeyexa":         ("注册表",   "低",   "枚举注册表子键（Unicode）"),
-
-    # ---- 网络 ----
-    "wsastartup":            ("网络",     "中等", "初始化 Winsock"),
-    "socket":                ("网络",     "中等", "创建套接字"),
-    "connect":               ("网络",     "中等", "连接远程地址"),
-    "send":                  ("网络",     "中等", "发送数据"),
-    "recv":                  ("网络",     "中等", "接收数据"),
-    "internetopena":         ("网络",     "中等", "初始化 WinINet（ANSI）"),
-    "internetopenw":         ("网络",     "中等", "初始化 WinINet（Unicode）"),
-    "internetconnecta":      ("网络",     "中等", "连接服务器（ANSI）"),
-    "internetconnectw":      ("网络",     "中等", "连接服务器（Unicode）"),
-    "httpsendrequesta":      ("网络",     "中等", "发送 HTTP 请求（ANSI）"),
-    "httpsendrequestw":      ("网络",     "中等", "发送 HTTP 请求（Unicode）"),
-    "urldownloadtofilea":    ("网络",     "严重", "下载文件到本地（ANSI），常用于木马下载"),
-    "urldownloadtofilew":    ("网络",     "严重", "下载文件到本地（Unicode），常用于木马下载"),
-    "inetntoa":              ("网络",     "低",   "IP 地址转字符串"),
-    "gethostbyname":         ("网络",     "中等", "域名解析为 IP"),
-    "dnsquery":              ("网络",     "中等", "DNS 查询"),
-    "sendto":                ("网络",     "中等", "UDP 发送数据"),
-
-    # ---- 文件 ----
-    "createfilea":           ("文件",     "低",   "创建/打开文件（ANSI）"),
-    "createfilew":           ("文件",     "低",   "创建/打开文件（Unicode）"),
-    "writefile":             ("文件",     "低",   "写入文件"),
-    "readfile":              ("文件",     "低",   "读取文件"),
-    "deletefilea":           ("文件",     "中等", "删除文件（ANSI）"),
-    "deletefilew":           ("文件",     "中等", "删除文件（Unicode）"),
-    "movefilea":             ("文件",     "低",   "移动文件（ANSI）"),
-    "movefilew":             ("文件",     "低",   "移动文件（Unicode）"),
-    "copyfilea":             ("文件",     "低",   "复制文件（ANSI）"),
-    "copyfilew":             ("文件",     "低",   "复制文件（Unicode）"),
-    "createprocessinternala": ("文件",    "中等", "原生层创建进程（ANSI）"),
-    "createprocessinternalw": ("文件",    "中等", "原生层创建进程（Unicode）"),
-
-    # ---- 加密 ----
-    "cryptacquirecontexta":  ("加密",     "低",   "获取加密上下文（ANSI）"),
-    "cryptacquirecontextw":  ("加密",     "低",   "获取加密上下文（Unicode）"),
-    "cryptgenrandom":        ("加密",     "低",   "生成随机数"),
-    "cryptencrypt":          ("加密",     "低",   "加密数据"),
-    "cryptdecrypt":          ("加密",     "低",   "解密数据"),
-    "crypthashdata":         ("加密",     "低",   "计算哈希"),
-
-    # ---- 反调试（严重）----
-    "isdebuggerpresent":            ("反调试", "严重", "检测当前进程是否被调试"),
-    "checkremotedebuggerpresent":   ("反调试", "严重", "检测远程调试器"),
-    "ntqueryinformationprocess":    ("反调试", "中等", "查询进程信息，常用于反调试"),
-    "queryperformancecounter":      ("反调试", "中等", "性能计数器，常用于反调试时间检测"),
-    "gettickcount":                 ("反调试", "低",   "获取系统启动毫秒数"),
-    "ntquerysysteminformation":     ("反调试", "中等", "查询系统信息"),
-    "rtladjustprivilege":           ("反调试", "严重", "提权操作"),
-    "ntsetinformationprocess":      ("反调试", "严重", "设置进程信息"),
-    "zwqueryinformationprocess":    ("反调试", "中等", "原生层查询进程信息"),
-    "findwindowa":                  ("反调试", "中等", "查找窗口（ANSI），常用于检测调试器窗口"),
-    "findwindoww":                  ("反调试", "中等", "查找窗口（Unicode）"),
-
-    # ---- 键盘记录（严重）----
-    "setwindowshookexa":            ("键盘记录", "严重", "设置全局钩子（ANSI），常用于键盘记录"),
-    "setwindowshookexw":            ("键盘记录", "严重", "设置全局钩子（Unicode），常用于键盘记录"),
-    "getasynckeystate":             ("键盘记录", "严重", "获取异步按键状态，常用于键盘记录"),
-    "getkeystate":                  ("键盘记录", "中等", "获取按键状态"),
-    "registerhotkey":               ("键盘记录", "中等", "注册全局热键"),
-
-    # ---- 屏幕截图 ----
-    "bitblt":                       ("屏幕截图", "中等", "位图复制，可用于屏幕截图"),
-    "createcompatiblebitmap":       ("屏幕截图", "中等", "创建兼容位图"),
-    "getdesktopwindow":             ("屏幕截图", "低",   "获取桌面窗口句柄"),
-    "getdc":                        ("屏幕截图", "低",   "获取设备上下文"),
-    "getwindowdc":                  ("屏幕截图", "低",   "获取窗口设备上下文"),
-    "keybd_event":                  ("屏幕截图", "中等", "模拟键盘事件"),
-    "mouse_event":                  ("屏幕截图", "中等", "模拟鼠标事件"),
-    "printwindow":                  ("屏幕截图", "中等", "打印窗口内容，可用于截图"),
-
-    # ---- 自启动 / 持久化 ----
-    "createtoolhelp32snapshot":     ("自启动",   "中等", "创建进程快照，用于枚举进程"),
-    "adjusttokenprivileges":        ("自启动",   "严重", "调整令牌权限，常用于提权"),
-    "createservicea":               ("自启动",   "严重", "创建系统服务（ANSI），常用于持久化"),
-    "createservicew":               ("自启动",   "严重", "创建系统服务（Unicode），常用于持久化"),
-    "openscmanagera":               ("自启动",   "中等", "打开服务控制管理器（ANSI）"),
-    "openscmanagerw":               ("自启动",   "中等", "打开服务控制管理器（Unicode）"),
-    "startservicea":                ("自启动",   "中等", "启动系统服务（ANSI）"),
-    "startservicew":                ("自启动",   "中等", "启动系统服务（Unicode）"),
-    "createprocesswithlogonw":      ("自启动",   "中等", "使用其他凭据创建进程"),
-}
-
-
-# 外置词典路径（项目根 assets/ 下，用户可自行编辑扩充，无需改代码）
-RISK_DICT_PATH = Path(__file__).resolve().parent.parent / "assets" / "high_risk_apis.json"
-
-
-# --------------------------------------------------------------------------
-# 调试目录解析（A4：PDB 路径 / GUID / Age）
-# --------------------------------------------------------------------------
-
-def _format_guid(sig: str) -> str:
-    """把 32 位十六进制串格式化为标准 GUID；长度或字符不合法一律返回 ""。"""
-    s = (sig or "").strip().upper()
-    if len(s) != 32 or any(c not in "0123456789ABCDEF" for c in s):
-        return ""
-    return f"{s[0:8]}-{s[8:12]}-{s[12:16]}-{s[16:20]}-{s[20:32]}"
-
-
-def _parse_debug(pe, lang: str | None = None) -> list[DebugInfo]:
-    """解析调试目录，返回 DebugInfo 列表（A4）。
-
-    调用方需已对 IMAGE_DIRECTORY_ENTRY_DEBUG 执行过 parse_data_directories()，
-    否则 ``pe.DIRECTORY_ENTRY_DEBUG`` 不存在，本函数返回空列表。
-
-    实现要点：
-    - 仅 CodeView（Type==2）条目的 ``.entry`` 含 PDB 路径 / GUID / Age；
-      pefile 对每条都设 ``entry``，但其余类型多为 None 或结构不同（无 PdbFileName），
-      必须用 getattr 兜底；
-    - PdbFileName 是 bytes 且尾部带结构对齐填充的多个 \\x00，须剔除后再解码；
-    - 微软发布版系统文件常有调试目录但 PdbFileName 为空（发布时剥离了路径），
-      **属正常现象，不是解析失败**；
-    - 单条解析全程 try/except：畸形样本的一条坏条目不能拖垮整个解析
-      （沿用项目「畸形 PE 绝不裸抛」原则）。
-    """
-    lang = lang or get_language()
-    out: list[DebugInfo] = []
-    for e in getattr(pe, "DIRECTORY_ENTRY_DEBUG", None) or []:
-        try:
-            debug_type = int(e.struct.Type)
-            timestamp = int(e.struct.TimeDateStamp)
-            name = _DEBUG_TYPE_NAMES.get(debug_type, "")
-            # 未知类型不在表内：default 兜底显示原始值，保证 type_text 非空
-            type_text = translate("DEBUG_TYPE", name,
-                                default=name or str(debug_type), lang=lang)
-
-            entry = getattr(e, "entry", None)  # 仅 CodeView 的 entry 含 PDB 字段，其余多为 None
-            pdb_path = ""
-            pdb_name = ""
-            guid = ""
-            age = 0
-            cv_signature = ""
-            if entry is not None:
-                raw = getattr(entry, "PdbFileName", b"")
-                if isinstance(raw, str):
-                    # 容错：个别 pefile 版本/样本可能直接给 str
-                    pdb_path = raw.rstrip("\x00")
-                elif isinstance(raw, (bytes, bytearray)):
-                    pdb_path = bytes(raw).rstrip(b"\x00").decode("utf-8", errors="replace")
-                # 不用 pathlib：Windows 路径含反斜杠，Linux 下 PureWindowsPath 才认，
-                # 这里手工切分最稳妥
-                pdb_name = pdb_path.replace("\\", "/").rsplit("/", 1)[-1]
-                # pefile 的 Signature_String 是「32 位 GUID + Age 十六进制」拼接
-                # （pefile.py: uuid.UUID(...).replace("-","").upper() + f"{Age:X}"，
-                #   实测 RSDS 样本为 33 字符），须取前 32 位才是 GUID；
-                # NB10 老条目无该属性，getattr 兜底为 ""
-                sig = str(getattr(entry, "Signature_String", "") or "")[:32]
-                guid = _format_guid(sig)
-                cv_raw = getattr(entry, "CvSignature", b"")
-                if isinstance(cv_raw, (bytes, bytearray)):
-                    cv_signature = bytes(cv_raw).decode("ascii", errors="replace")
-                elif isinstance(cv_raw, str):
-                    cv_signature = cv_raw
-                age = int(getattr(entry, "Age", 0) or 0)
-            out.append(DebugInfo(
-                debug_type=debug_type,
-                type_text=type_text,
-                pdb_path=pdb_path,
-                pdb_name=pdb_name,
-                guid=guid,
-                age=age,
-                timestamp=timestamp,
-                cv_signature=cv_signature,
-            ))
-        except Exception:  # noqa: BLE001
-            # 畸形样本的单个坏条目（字段缺失/类型异常/解码失败）不应拖垮整个解析，
-            # 跳过该条、继续处理其余条目
-            continue
-    return out
-
-
-def _has_path_separator(pdb_path: str) -> bool:
-    """PdbFileName 是否含真实路径分隔符（区别于仅裸文件名）。
-
-    微软发布版常把完整路径剥离为裸文件名（如 "notepad.pdb"），该形态不含
-    编译机目录信息、无溯源价值，汇总 has_pdb / pdb_paths 时须据此过滤。
-    """
-    return "\\" in pdb_path or "/" in pdb_path
-
-
-def _load_high_risk_apis() -> dict[str, tuple[str, str, str]]:
-    """从 assets/high_risk_apis.json 加载高危 API 词典。
-
-    加载失败时**记录告警并回退内置**（不再静默 pass）。
-    """
-    try:
-        with RISK_DICT_PATH.open(encoding="utf-8") as fh:
-            raw = json.load(fh)
-    except FileNotFoundError:
-        return dict(_BUILTIN_HIGH_RISK_APIS)
-    except (OSError, json.JSONDecodeError) as exc:
-        _LOAD_WARNINGS.append(("warn.risk_load_failed", {"err": exc}))
-        return dict(_BUILTIN_HIGH_RISK_APIS)
-
-    loaded: dict[str, tuple[str, str, str]] = {}
-    if isinstance(raw, dict):
-        for key, val in raw.items():
-            if isinstance(val, (list, tuple)) and len(val) == 3:
-                loaded[str(key).lower()] = (str(val[0]), str(val[1]), str(val[2]))
-    if loaded:
-        return loaded
-    return dict(_BUILTIN_HIGH_RISK_APIS)
-
-
-# 实际生效的词典（外部 JSON 优先，内置条目兜底）
-HIGH_RISK_APIS: dict[str, tuple[str, str, str]] = _load_high_risk_apis()
-
-
-# --------------------------------------------------------------------------
-# DLL 用途说明词典
-# --------------------------------------------------------------------------
-
-DLL_MEANINGS_PATH = Path(__file__).resolve().parent.parent / "assets" / "dll_meanings.json"
-
-# 内置为空（说明性数据纯外置）；加载失败时仅记录告警
-_BUILTIN_DLL_MEANINGS: dict[str, str] = {}
-
-
-def _load_dll_meanings() -> dict[str, str]:
-    """从 assets/dll_meanings.json 加载 DLL 用途说明词典（key 统一小写）。"""
-    try:
-        with DLL_MEANINGS_PATH.open(encoding="utf-8") as fh:
-            raw = json.load(fh)
-    except FileNotFoundError:
-        return dict(_BUILTIN_DLL_MEANINGS)
-    except (OSError, json.JSONDecodeError) as exc:
-        _LOAD_WARNINGS.append(("warn.dll_load_failed", {"err": exc}))
-        return dict(_BUILTIN_DLL_MEANINGS)
-
-    if not isinstance(raw, dict):
-        _LOAD_WARNINGS.append(("warn.dll_bad_root", {}))
-        return dict(_BUILTIN_DLL_MEANINGS)
-
-    out: dict[str, str] = {}
-    for key, value in raw.items():
-        k = str(key).strip().lower()
-        if not k or k.startswith("_"):
-            continue
-        if isinstance(value, str) and value:
-            out[k] = value
-    return out or dict(_BUILTIN_DLL_MEANINGS)
-
-
-DLL_MEANINGS: dict[str, str] = _load_dll_meanings()
-
-
-def dll_meaning(name: str) -> str:
-    """查 DLL 用途说明；未收录返回空串。名称统一小写、去空白后匹配。"""
-    if not name:
-        return ""
-    return DLL_MEANINGS.get(name.strip().lower(), "")
-
-
-def _scan_risky_imports(imports: list[ImportDLL]) -> list[RiskyImport]:
-    """扫描导入表，匹配高危 API 词典。"""
-    risky: list[RiskyImport] = []
-    for dll in imports:
-        for sym in dll.symbols:
-            name = sym.display
-            key = name.lower()
-            if key in HIGH_RISK_APIS:
-                category, risk_level, description = HIGH_RISK_APIS[key]
-                risky.append(RiskyImport(
-                    dll=dll.dll,
-                    function=name,
-                    category=category,
-                    risk_level=risk_level,
-                    description=description,
-                ))
-    return risky
-
-
-# --------------------------------------------------------------------------
-# 打包器识别
-# --------------------------------------------------------------------------
-
-# (打包器名, 节区名特征(小写/前缀匹配), 特征字符串(小写/子串匹配))
-_PACKER_SIGNATURES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
-    ("UPX",         ("upx0", "upx1", "upx2"), ("upx!", "upx0", "upx1")),
-    ("PyInstaller", ("pyi-",), ("pyi-", "pyinstaller", "_meipass", "pyz-00.pyz", "pyiboot")),
-    ("Nuitka",      ("nuitka",), ("__nuitka", "nuitka-onefile", "nuitka-python", "nuitka_onefile")),
-    ("VMProtect",   (".vmp0", ".vmp1", ".vmp2", ".vmp"), ("vmprotect", ".vmp0", ".vmp1")),
-    ("Themida",     (".themida", ".winlice"), ("themida", "winlicense")),
-    ("ASPack",      (".aspack", ".adata"), ("aspack",)),
-    ("MPRESS",      (".mpress1", ".mpress2"), ("mpress1", "mpress2")),
-    ("PECompact",   ("pec1", "pec2", "pec3"), ("pecompact",)),
-    ("Enigma",      (".enigma1", ".enigma2"), ("enigma prot",)),
-    ("WinUpack",    (".upack",), (".upack",)),
-)
-
-
-def detect_packers(section_names: list[str], strings: list[str]) -> list[PackerHit]:
-    """根据节区名与特征字符串识别打包器。
-
-    - 节区名：全等或前缀匹配（如 ``.vmp0``）
-    - 字符串：子串匹配；只扫描前 PACKER_SCAN_LIMIT 条，避免超大样本卡顿
-    """
-    sec_lower = [s.strip().lower() for s in (section_names or []) if s and s.strip()]
-
-    scan: set[str] = set()
-    for s in (strings or [])[:PACKER_SCAN_LIMIT]:
-        if s:
-            sl = s.strip().lower()
-            if sl:
-                scan.add(sl)
-
-    hits: list[PackerHit] = []
-    for name, sec_keys, str_keys in _PACKER_SIGNATURES:
-        sec_hits: list[str] = []
-        for key in sec_keys:
-            for actual in sec_lower:
-                if (actual == key or actual.startswith(key)) and actual not in sec_hits:
-                    sec_hits.append(actual)
-        str_hits: list[str] = []
-        for key in str_keys:
-            if any(key in s for s in scan) and key not in str_hits:
-                str_hits.append(key)
-        if sec_hits or str_hits:
-            hits.append(PackerHit(name=name, sections=sec_hits, strings=str_hits))
-    return hits
-
-
-# --------------------------------------------------------------------------
-# 数字签名校验（Windows Authenticode）
-# --------------------------------------------------------------------------
-
-def _security_dir_range(pe) -> tuple[int, int]:
-    """返回签名目录的 (文件偏移, 大小)；无签名返回 (0, 0)。
-
-    注意：IMAGE_DIRECTORY_ENTRY_SECURITY 的 VirtualAddress 是**文件偏移**而非 RVA。
-    """
-    try:
-        idx = pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_SECURITY"]
-        dd = pe.OPTIONAL_HEADER.DATA_DIRECTORY[idx]
-        offset, size = int(dd.VirtualAddress), int(dd.Size)
-        if offset > 0 and size > 0:
-            return offset, size
-    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
-        pass
-    return 0, 0
-
-
-def _read_signature_blob(pe, path: str, offset: int, size: int) -> bytes | None:
-    """读取 PKCS#7 签名数据（跳过 8 字节 WIN_CERTIFICATE 头）。失败返回 None。"""
-    raw: bytes | None = None
-    try:
-        data = getattr(pe, "__data__", None)
-        if isinstance(data, (bytes, bytearray)) and offset + 8 <= len(data):
-            raw = bytes(data[offset:offset + size])
-    except (TypeError, ValueError):
-        raw = None
-    if raw is None:
-        try:
-            with open(path, "rb") as fh:
-                fh.seek(offset)
-                raw = fh.read(size)
-        except (OSError, ValueError):
-            return None
-    if not raw or len(raw) < 8:
-        return None
-    try:
-        length, _revision, _ctype = struct.unpack_from("<IHH", raw, 0)
-    except struct.error:
-        return None
-    if length < 8 or length > len(raw):
-        length = len(raw)
-    blob = raw[8:length]
-    return blob or None
-
-
-def _win_verify_file(path: str) -> tuple[str, str]:
-    """用 Windows WinVerifyTrust 校验文件签名，返回 (status, detail)。
-
-    - status: SIG_VALID / SIG_INVALID / SIG_UNKNOWN
-    - detail: 附加说明（错误码等）
-
-    本函数只**读取**文件做密码学校验，绝不加载或执行样本；
-    强制 `WTD_CACHE_ONLY_URL_RETRIEVAL`，不联网取 CRL/OCSP。
-    """
-    try:
-        import ctypes
-        from ctypes import wintypes
-    except Exception as exc:  # noqa: BLE001
-        return SIG_UNKNOWN, f"ctypes 不可用：{exc}"
-
-    if not hasattr(ctypes, "windll"):
-        return SIG_UNKNOWN, "非 Windows 环境"
-
-    class _GUID(ctypes.Structure):
-        _fields_ = [
-            ("Data1", wintypes.DWORD),
-            ("Data2", wintypes.WORD),
-            ("Data3", wintypes.WORD),
-            ("Data4", ctypes.c_ubyte * 8),
-        ]
-
-    class _WINTRUST_FILE_INFO(ctypes.Structure):
-        _fields_ = [
-            ("cbStruct", wintypes.DWORD),
-            ("pcwszFilePath", wintypes.LPCWSTR),
-            ("hFile", wintypes.HANDLE),
-            ("pgKnownSubject", ctypes.POINTER(_GUID)),
-        ]
-
-    class _WINTRUST_DATA(ctypes.Structure):
-        _fields_ = [
-            ("cbStruct", wintypes.DWORD),
-            ("pPolicyCallbackData", ctypes.c_void_p),
-            ("pSIPClientData", ctypes.c_void_p),
-            ("dwUIChoice", wintypes.DWORD),
-            ("fdwRevocationChecks", wintypes.DWORD),
-            ("dwUnionChoice", wintypes.DWORD),
-            ("pFile", ctypes.POINTER(_WINTRUST_FILE_INFO)),
-            ("dwStateAction", wintypes.DWORD),
-            ("hWVTStateData", wintypes.HANDLE),
-            ("pwszURLReference", wintypes.LPWSTR),
-            ("dwProvFlags", wintypes.DWORD),
-            ("dwUIContext", wintypes.DWORD),
-            ("pSignatureSettings", ctypes.c_void_p),
-        ]
-
-    wtd_ui_none = 2
-    wtd_revoke_none = 0
-    wtd_choice_file = 1
-    wtd_state_verify = 1
-    wtd_state_close = 2
-    wtd_cache_only = 0x00001000   # 仅用本地缓存，避免联网
-
-    action = _GUID(0x00AAC56B, 0xCD44, 0x11D0,
-                   (ctypes.c_ubyte * 8)(0x8C, 0xC2, 0x00, 0xC0, 0x4F, 0xC2, 0x95, 0xEE))
-
-    file_info = _WINTRUST_FILE_INFO()
-    file_info.cbStruct = ctypes.sizeof(_WINTRUST_FILE_INFO)
-    file_info.pcwszFilePath = str(path)
-    file_info.hFile = None
-    file_info.pgKnownSubject = None
-
-    data = _WINTRUST_DATA()
-    data.cbStruct = ctypes.sizeof(_WINTRUST_DATA)
-    data.pPolicyCallbackData = None
-    data.pSIPClientData = None
-    data.dwUIChoice = wtd_ui_none
-    data.fdwRevocationChecks = wtd_revoke_none
-    data.dwUnionChoice = wtd_choice_file
-    data.pFile = ctypes.pointer(file_info)
-    data.dwStateAction = wtd_state_verify
-    data.hWVTStateData = None
-    data.pwszURLReference = None
-    data.dwProvFlags = wtd_cache_only
-    data.dwUIContext = 0
-    data.pSignatureSettings = None
-
-    try:
-        wintrust = ctypes.WinDLL("wintrust.dll")
-        fn = wintrust.WinVerifyTrust
-        fn.argtypes = [wintypes.HWND, ctypes.POINTER(_GUID), ctypes.c_void_p]
-        fn.restype = ctypes.c_long
-    except (OSError, AttributeError) as exc:
-        return SIG_UNKNOWN, f"无法加载 wintrust.dll：{exc}"
-
-    try:
-        result = fn(None, ctypes.byref(action), ctypes.byref(data))
-    except Exception as exc:  # noqa: BLE001
-        return SIG_UNKNOWN, f"WinVerifyTrust 调用失败：{exc}"
-    finally:
-        # 释放校验状态数据，避免句柄泄漏
-        try:
-            data.dwStateAction = wtd_state_close
-            fn(None, ctypes.byref(action), ctypes.byref(data))
-        except Exception:  # noqa: BLE001
-            pass
-
-    code = int(ctypes.c_long(result).value)
-    if code == 0:
-        return SIG_VALID, ""
-    return SIG_INVALID, f"0x{code & 0xFFFFFFFF:08X}"
-
-
-def _win_check_catalog(path: str) -> bool:
-    """检查文件是否被 Windows 目录签名（catalog-signed）。
-
-    WinVerifyTrust 对 catalog 文件会返回 ``0x800B0100``（找不到内嵌证书对应 .cat
-    条目）而误判为 invalid。正确做法是用 ``CryptCATAdmin*`` 系列 API 自己
-    算 SHA1 哈希并查询 ``C:\\Windows\\System32\\catroot\\`` 下的 .cat 文件。
-
-    - 返回 ``True``：该文件的 SHA1 在系统 .cat 中能找到
-    - 返回 ``False``：未找到，或非 Windows / ctypes 不可用 / API 失败
-
-    关键安全约束：纯静态、只读文件，不联网、不执行样本。
-    """
-    try:
-        import ctypes
-        from ctypes import wintypes
-    except Exception:
-        return False
-    if not hasattr(ctypes, "windll"):
-        return False
-
-    # 准备 wintrust.dll 句柄（CryptCATAdmin* 在 wintrust.dll，不在 crypt32.dll）
-    try:
-        wintrust = ctypes.WinDLL("wintrust.dll")
-    except OSError:
-        return False
-
-    # 关键：CryptCATAdminCalcHashFromFileHandle 的官方签名只有 4 个参数：
-    #   (HANDLE hFile, DWORD* pcbHash, BYTE* pbHash, DWORD dwFlags)
-    # MSDN 与 Wine 头文件均如此。本函数**不接受** HCATADMIN —— 网上部分示例是错的。
-    catadmin_calc = wintrust.CryptCATAdminCalcHashFromFileHandle
-    catadmin_calc.argtypes = [
-        wintypes.HANDLE,                            # hFile
-        ctypes.POINTER(wintypes.DWORD),             # pcbHash
-        ctypes.POINTER(ctypes.c_ubyte),             # pbHash
-        wintypes.DWORD,                             # dwFlags
-    ]
-    catadmin_calc.restype = ctypes.c_bool
-
-    # CryptCATAdminEnumCatalogFromHash：MSDN 文档说无参数版本不存在；实测 Win10/11
-    # 真实签名是 (HCATADMIN hCatAdmin, BYTE* pbHash, DWORD cbHash, DWORD dwFlags, ...)
-    # 旧版有 PSTR catname 字段，新版无。安全做法：传 NULL catname，只看返回值非零。
-    catadmin_enum = getattr(wintrust, "CryptCATAdminEnumCatalogFromHash", None)
-    if catadmin_enum is None:
-        return False
-
-    # AcquireContext / ReleaseContext：必须用 GlobAddContextFlag 否则获取不到全局 .cat
-    catadmin = wintrust.CryptCATAdminAcquireContext
-    catadmin.argtypes = [ctypes.POINTER(wintypes.HANDLE), ctypes.c_void_p, wintypes.DWORD]
-    catadmin.restype = ctypes.c_bool
-
-    catadmin_release = wintrust.CryptCATAdminReleaseContext
-    catadmin_release.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-    catadmin_release.restype = ctypes.c_bool
-
-    ctx = wintypes.HANDLE()
-    if not catadmin(ctypes.byref(ctx), None, 0):
-        return False
-
-    file_handle = wintypes.HANDLE()
-    try:
-        # CreateFileW 拿只读句柄；INVALID_HANDLE_VALUE 失败
-        CreateFileW = ctypes.WinDLL("kernel32.dll").CreateFileW
-        CreateFileW.argtypes = [
-            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
-            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
-        ]
-        CreateFileW.restype = wintypes.HANDLE
-        GENERIC_READ = 0x80000000
-        FILE_SHARE_READ = 0x00000001
-        OPEN_EXISTING = 3
-        file_handle = CreateFileW(
-            str(path), GENERIC_READ, FILE_SHARE_READ, None, OPEN_EXISTING, 0, None
-        )
-        if file_handle == wintypes.HANDLE(-1).value or file_handle is None:
-            return False
-
-        # 算 SHA1（20 字节）：先入参 pcbHash=20，返回时被覆盖为真实长度
-        hash_buf = (ctypes.c_ubyte * 20)()
-        hash_len = wintypes.DWORD(20)
-        ok = catadmin_calc(file_handle, ctypes.byref(hash_len), hash_buf, 0)
-        if not ok or hash_len.value < 20:
-            return False
-
-        # 试 Win10+ 标准签名：(HCATADMIN, BYTE*, DWORD, DWORD, PCWSTR, DWORD*)
-
-        cat_info = None
-        for argtypes in (
-            # 文档签名（Win10 1903+）：返回 CAT_INFO*，无 catname
-            [wintypes.HANDLE, ctypes.POINTER(ctypes.c_ubyte), wintypes.DWORD,
-             wintypes.DWORD, ctypes.c_wchar_p, ctypes.POINTER(wintypes.DWORD)],
-            # 旧版（< Win10 1903）：带 catname 指针
-            [wintypes.HANDLE, ctypes.POINTER(ctypes.c_ubyte), wintypes.DWORD,
-             wintypes.DWORD, ctypes.c_char_p, ctypes.POINTER(wintypes.DWORD)],
-        ):
-            try:
-                catadmin_enum.argtypes = argtypes
-                catadmin_enum.restype = ctypes.c_void_p
-                info = catadmin_enum(ctx, hash_buf, 20, 0, None, None)
-                if info:
-                    cat_info = info
-                    break
-            except (OSError, AttributeError, ctypes.ArgumentError):
-                continue
-        return cat_info is not None and cat_info != 0
-    except Exception:
-        return False
-    finally:
-        if file_handle:
-            try:
-                ctypes.WinDLL("kernel32.dll").CloseHandle(file_handle)
-            except Exception:
-                pass
-        try:
-            catadmin_release(ctx, 0)
-        except Exception:
-            pass
-
-
-def _win_extract_signer(sig_bytes: bytes) -> tuple[str, str]:
-    """从 PKCS#7 签名数据中提取 (签名者, 颁发者) 的显示名。失败返回空串。
-
-    用 CryptQueryObject 解析签名，枚举证书取显示名（签名者证书通常排在最前）。
-    """
-    if not sig_bytes:
-        return "", ""
-    try:
-        import ctypes
-        from ctypes import wintypes
-    except Exception:  # noqa: BLE001
-        return "", ""
-    if not hasattr(ctypes, "windll"):
-        return "", ""
-
-    class _CRYPT_DATA_BLOB(ctypes.Structure):
-        _fields_ = [("cbData", wintypes.DWORD),
-                    ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
-
-    class _CRYPT_ALGORITHM_IDENTIFIER(ctypes.Structure):
-        _fields_ = [("pszObjId", ctypes.c_char_p),
-                    ("Parameters", _CRYPT_DATA_BLOB)]
-
-    class _FILETIME(ctypes.Structure):
-        _fields_ = [("dwLowDateTime", wintypes.DWORD),
-                    ("dwHighDateTime", wintypes.DWORD)]
-
-    class _CMSG_SIGNER_INFO(ctypes.Structure):
-        # 只声明到 SerialNumber（后续字段 CertFindCertificateInStore 用不到）
-        _fields_ = [("dwVersion", wintypes.DWORD),
-                    ("Issuer", _CRYPT_DATA_BLOB),
-                    ("SerialNumber", _CRYPT_DATA_BLOB)]
-
-    class _CERT_INFO(ctypes.Structure):
-        # 部分布局：CertFindCertificateInStore(CERT_FIND_SUBJECT_CERT) 只用 Issuer + SerialNumber
-        _fields_ = [("dwVersion", wintypes.DWORD),
-                    ("SerialNumber", _CRYPT_DATA_BLOB),
-                    ("SignatureAlgorithm", _CRYPT_ALGORITHM_IDENTIFIER),
-                    ("Issuer", _CRYPT_DATA_BLOB),
-                    ("NotBefore", _FILETIME),
-                    ("NotAfter", _FILETIME),
-                    ("Subject", _CRYPT_DATA_BLOB)]
-
-    cert_query_object_blob = 2
-    cert_query_content_flag_all = 0x3FFE
-    cert_query_format_flag_all = 0x0000000E
-    cert_name_simple_display_type = 4
-
-    buf = (ctypes.c_ubyte * len(sig_bytes)).from_buffer_copy(sig_bytes)
-    blob = _CRYPT_DATA_BLOB(len(sig_bytes), ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte)))
-
-    try:
-        crypt32 = ctypes.WinDLL("crypt32.dll")
-    except OSError:
-        return "", ""
-
-    CryptQueryObject = crypt32.CryptQueryObject
-    CryptQueryObject.argtypes = [
-        wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
-        ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
-        ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.HANDLE),
-        ctypes.POINTER(wintypes.HANDLE), ctypes.POINTER(ctypes.c_void_p),
-    ]
-    CryptQueryObject.restype = wintypes.BOOL
-
-    encoding = wintypes.DWORD()
-    content_type = wintypes.DWORD()
-    format_type = wintypes.DWORD()
-    h_store = wintypes.HANDLE()
-    h_msg = wintypes.HANDLE()
-    p_context = ctypes.c_void_p()
-
-    ok = CryptQueryObject(
-        cert_query_object_blob, ctypes.byref(blob),
-        cert_query_content_flag_all, cert_query_format_flag_all, 0,
-        ctypes.byref(encoding), ctypes.byref(content_type), ctypes.byref(format_type),
-        ctypes.byref(h_store), ctypes.byref(h_msg), ctypes.byref(p_context),
-    )
-    if not ok or not h_store:
-        return "", ""
-
-    signer, issuer = "", ""
-    try:
-        CertGetNameStringW = crypt32.CertGetNameStringW
-        CertGetNameStringW.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
-                                       ctypes.c_void_p, wintypes.LPWSTR, wintypes.DWORD]
-        CertGetNameStringW.restype = wintypes.DWORD
-
-        def _cert_name(cert_ctx, issuer_flag: int = 0) -> str:
-            """取证书显示名；issuer_flag=1 时取颁发者名（CERT_NAME_ISSUER_FLAG）。"""
-            need = CertGetNameStringW(cert_ctx, cert_name_simple_display_type,
-                                      issuer_flag, None, None, 0)
-            if need <= 1:
-                return ""
-            name_buf = ctypes.create_unicode_buffer(need)
-            CertGetNameStringW(cert_ctx, cert_name_simple_display_type,
-                               issuer_flag, None, name_buf, need)
-            return name_buf.value or ""
-
-        # 优先用 CMSG_SIGNER_INFO 精确定位"叶证书"（签名者），避免取到中间 CA
-        leaf_ctx = None
-        if h_msg:
-            try:
-                CryptMsgGetParam = crypt32.CryptMsgGetParam
-                CryptMsgGetParam.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
-                                             ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
-                CryptMsgGetParam.restype = wintypes.BOOL
-                cmsg_signer_info_param = 6
-                need_size = wintypes.DWORD()
-                if (CryptMsgGetParam(h_msg, cmsg_signer_info_param, 0, None, ctypes.byref(need_size))
-                        and need_size.value):
-                    info_buf = (ctypes.c_ubyte * need_size.value)()
-                    if CryptMsgGetParam(h_msg, cmsg_signer_info_param, 0, info_buf,
-                                        ctypes.byref(need_size)):
-                        signer_info = _CMSG_SIGNER_INFO.from_buffer(info_buf)
-                        cert_info = _CERT_INFO()
-                        cert_info.dwVersion = 0
-                        cert_info.SerialNumber = signer_info.SerialNumber
-                        cert_info.Issuer = signer_info.Issuer
-                        CertFindCertificateInStore = crypt32.CertFindCertificateInStore
-                        CertFindCertificateInStore.argtypes = [wintypes.HANDLE, wintypes.DWORD,
-                                                               wintypes.DWORD, wintypes.DWORD,
-                                                               ctypes.c_void_p, ctypes.c_void_p]
-                        CertFindCertificateInStore.restype = ctypes.c_void_p
-                        x509_pkcs7 = 0x00010001          # X509_ASN_ENCODING | PKCS_7_ASN_ENCODING
-                        cert_find_subject_cert = 0x000B0000
-                        leaf_ctx = CertFindCertificateInStore(
-                            h_store, x509_pkcs7, 0, cert_find_subject_cert,
-                            ctypes.byref(cert_info), None)
-            except Exception:  # noqa: BLE001
-                leaf_ctx = None
-
-        cert_name_issuer_flag = 0x1
-        if leaf_ctx:
-            signer = _cert_name(leaf_ctx, 0)
-            issuer = _cert_name(leaf_ctx, cert_name_issuer_flag)
-        if not signer:
-            # 回退：枚举证书存储，取第一个作为签名者
-            CertEnumCertificatesInStore = crypt32.CertEnumCertificatesInStore
-            CertEnumCertificatesInStore.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
-            CertEnumCertificatesInStore.restype = ctypes.c_void_p
-            cert = CertEnumCertificatesInStore(h_store, None)
-            count = 0
-            while cert and count < 6:
-                name = _cert_name(cert, 0)
-                if name and not signer:
-                    signer = name
-                elif name and not issuer:
-                    issuer = name
-                cert = CertEnumCertificatesInStore(h_store, cert)
-                count += 1
-    except Exception:  # noqa: BLE001
-        pass
-    finally:
-        try:
-            crypt32.CertCloseStore(h_store, 0)
-        except Exception:  # noqa: BLE001
-            pass
-        if h_msg:
-            try:
-                crypt32.CryptMsgClose(h_msg)
-            except Exception:  # noqa: BLE001
-                pass
-    return signer, issuer
-
-
-def check_signature(pe, path: str) -> SignatureInfo:
-    """检查 PE 数字签名。
-
-    关键修复（P 级缺陷，曾漏检目录签名）：当内嵌 IMAGE_DIRECTORY_ENTRY_SECURITY
-    为空时，**仍调用 WinVerifyTrust** 走系统 .cat 目录验证。若 WinVerifyTrust 报告
-    valid，则视为「目录签名（catalog-signed）」，``present=True / kind=catalog``。
-    这样系统文件（notepad.exe、cmd.exe、consent.exe 等）能被正确识别为「已签名」。
-
-    仅当「无内嵌证书 **且** WinVerifyTrust 也失败」时才返回 ``present=False``。
-    """
-    offset, size = _security_dir_range(pe)
-    has_embedded = bool(offset and size)
-
-    if has_embedded:
-        # 路径 1：内嵌 PKCS#7 证书。校验有效性并尝试提取签名者。
-        info = SignatureInfo(
-            present=True,
-            status=SIG_UNKNOWN,
-            kind=SIG_KIND_EMBEDDED,
-            size=size,
-        )
-        status, detail = _win_verify_file(str(path))
-        info.status = status
-        info.detail = detail
-
-        blob = _read_signature_blob(pe, str(path), offset, size)
-        if blob:
-            signer, issuer = _win_extract_signer(blob)
-            info.signer = signer
-            info.issuer = issuer
-        return info
-
-    # 路径 2：内嵌 Security 目录为空 → 走 .cat 目录签名兜底。
-    # WinVerifyTrust 对纯 catalog 文件会返回 TRUST_E_CERT_SIGNATURE
-    # (0x800B0100)，不能用它判断；改用 CryptCATAdmin* 直接查系统 .cat。
-    if _win_check_catalog(str(path)):
-        return SignatureInfo(
-            present=True,
-            status=SIG_VALID,
-            kind=SIG_KIND_CATALOG,
-        )
-    # 真正无签名：内嵌无证书，.cat 也找不到
-    return SignatureInfo(
-        present=False,
-        status=SIG_NONE,
-        kind=SIG_KIND_NONE,
-    )
+# 显式导出清单：声明"本模块的公开面"= 全部子模块公开符号 + 本文件的解析入口。
+# 带下划线的名称（_parse_debug 等）一并导出，是为了兼容拆分前
+# ``achieve.pe_parser._xxx`` 的既有引用（测试 / 历史脚本）。
+__all__ = [
+    # 本文件
+    "__version__", "parse_pe", "_build_report",
+    # pe_models
+    "LOAD_WARNINGS", "PeParseError", "PeReport", "SectionInfo", "ImportDLL",
+    "ImportSymbol", "ExportSymbol", "RiskyImport", "PackerHit", "DebugInfo",
+    "SignatureInfo", "SIG_NONE", "SIG_VALID", "SIG_INVALID", "SIG_UNKNOWN",
+    "SIG_KIND_NONE", "SIG_KIND_EMBEDDED", "SIG_KIND_CATALOG",
+    # pe_translations
+    "TRANSLATIONS", "TRANSLATIONS_PATH", "translate", "translate_pair", "zh_pair",
+    # pe_format
+    "ENTROPY_WARN", "ENTROPY_SAMPLE_THRESHOLD", "ENTROPY_SAMPLE_SIZE",
+    "MAX_FILE_SIZE", "PACKER_SCAN_LIMIT", "SECTION_FLAGS", "human_size",
+    "fmt_time", "section_perms", "perms_to_zh", "section_entropy",
+    # pe_sections
+    "check_section_anomaly", "SCN_MEM_EXECUTE", "SCN_MEM_READ", "SCN_MEM_WRITE",
+    "NORMALLY_WRITABLE_SECTIONS", "SECTION_EXPAND_RATIO",
+    # pe_debug
+    "_parse_debug", "_format_guid", "_has_path_separator",
+    # pe_dlls
+    "DLL_MEANINGS", "DLL_MEANINGS_PATH", "dll_meaning",
+    # pe_risks
+    "HIGH_RISK_APIS", "RISK_DICT_PATH", "_scan_risky_imports",
+    # pe_packer
+    "detect_packers",
+    # pe_signature
+    "check_signature",
+]
 
 
 # --------------------------------------------------------------------------
@@ -1678,7 +321,7 @@ def _build_report(pe: pefile.PE, p: Path, lang: str) -> PeReport:
 
     warnings: list[str] = []
     # 加载期降级告警（外置词典/翻译表加载失败等）——不再静默
-    for key, kwargs in _LOAD_WARNINGS:
+    for key, kwargs in LOAD_WARNINGS:
         warnings.append(t(key, **kwargs))
     # 字符串提取的截断/降级告警（P1-1 / P1-2）——直接透传可读文案
     warnings.extend(strings_summary.get("warnings", ()))
